@@ -97,31 +97,41 @@ const RUTAS_CONTABLES: RutaContable[] = [
   },
 ];
 
+/**
+ * Herramienta de consulta.
+ *
+ * El recurso se expone como enum de un solo campo en vez de como un
+ * parámetro string por ruta. Con 12 parámetros opcionales libres el modelo
+ * rellenaba uno al azar: "plan de cuentas" llegaba a resumen-inventario y
+ * "saldos de cuentas" también. Un enum lo obliga a elegir un valor que
+ * existe, y la selección entre valores enumerados es bastante más fiable que
+ * rellenar texto libre en campos que no piden nada concreto.
+ */
 function buildConsultTool(): LlmTool {
-  const propiedades: Record<string, unknown> = {
-    query: {
-      type: 'string',
-      description:
-        'Consulta a realizar sobre los datos del usuario, redactada de forma clara en español.',
-    },
-  };
-  for (const ruta of RUTAS_CONTABLES) {
-    propiedades[ruta.id] = {
-      type: 'string',
-      description: `${ruta.descripcion} Deja vacío si no la usas.`,
-    };
-  }
-
   return {
     type: 'function',
     function: {
       name: 'consult_backend',
       description:
-        'Consulta el sistema contable y devuelve los datos del usuario. Elige la opción que corresponda a lo que pide y rellénala con la consulta del usuario. Solo rellena una.',
+        'Consulta el sistema contable y devuelve los datos del usuario. Elige en "recurso" la opción que corresponda a lo que pide y explica en "query" qué buscar.',
       parameters: {
         type: 'object',
-        properties: propiedades,
-        required: ['query'],
+        properties: {
+          recurso: {
+            type: 'string',
+            enum: RUTAS_CONTABLES.map((ruta) => ruta.id),
+            description: [
+              'Qué consultar. Opciones disponibles:',
+              ...RUTAS_CONTABLES.map((ruta) => `- ${ruta.id}: ${ruta.descripcion}`),
+            ].join('\n'),
+          },
+          query: {
+            type: 'string',
+            description:
+              'Consulta a realizar sobre los datos del usuario, redactada de forma clara en español.',
+          },
+        },
+        required: ['recurso', 'query'],
       },
     },
   };
@@ -248,9 +258,9 @@ export class AssistantService implements OnModuleDestroy {
   /**
    * Lee los argumentos de la llamada y decide qué endpoint consultar.
    *
-   * El LLM marca la opción que corresponde con la consulta del usuario. Si
-   * no marca ninguna se usa el árbol de cuentas, que es la ruta por defecto
-   * y cubre la mayoría de las preguntas sobre el plan.
+   * El LLM indica el recurso en el campo "recurso". Si no lo indica (o
+   * indica uno que no existe) se usa el árbol de cuentas, que es la ruta
+   * por defecto y cubre la mayoría de las preguntas sobre el plan.
    */
   private parseToolCall(
     rawArguments: string,
@@ -269,10 +279,9 @@ export class AssistantService implements OnModuleDestroy {
         ? parsed.query.trim()
         : fallback;
 
-    const elegida = RUTAS_CONTABLES.find((ruta) => {
-      const valor = parsed[ruta.id];
-      return typeof valor === 'string' && valor.trim().length > 0;
-    });
+    const recurso =
+      typeof parsed.recurso === 'string' ? parsed.recurso.trim() : '';
+    const elegida = RUTAS_CONTABLES.find((ruta) => ruta.id === recurso);
 
     return { query, ruta: elegida ?? porDefecto };
   }
