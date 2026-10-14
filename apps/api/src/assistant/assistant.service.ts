@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { env } from '../config';
+import { Backend1AuthService } from '../common/backend1-auth.service';
 import { LlmMessage, LlmService, LlmTool } from './llm.service';
 
 export interface AssistantInbound {
@@ -43,7 +44,10 @@ export class AssistantService implements OnModuleDestroy {
   private readonly history = new Map<string, HistoryEntry>();
   private readonly cleanupTimer: ReturnType<typeof setInterval>;
 
-  constructor(private readonly llm: LlmService) {
+  constructor(
+    private readonly llm: LlmService,
+    private readonly backend1: Backend1AuthService,
+  ) {
     this.cleanupTimer = setInterval(
       () => this.cleanup(),
       env.chatHistoryTtlMs(),
@@ -153,17 +157,12 @@ export class AssistantService implements OnModuleDestroy {
     query: string,
     payload: AssistantInbound,
   ): Promise<string> {
-    const base = env.backend1BaseUrl();
+    const base = this.backend1.baseUrl;
     if (!base) {
       return env.dataUnavailableReply();
     }
 
-    const token = env.sharedToken();
-    this.logger.log(`Token length: ${token?.length || 0}, base: ${base}`);
-    const headers: Record<string, string> = {
-      'content-type': 'application/json',
-    };
-    if (token) headers.authorization = `Bearer ${token}`;
+    this.logger.log(`Base Backend 1: ${base}`);
 
     try {
       // Detectar qué endpoint consultar según la query
@@ -174,35 +173,19 @@ export class AssistantService implements OnModuleDestroy {
 
       // Activar la empresa antes de consultar
       if (payload.empresaId) {
-        await this.activateEmpresa(payload.empresaId, headers);
+        await this.activateEmpresa(payload.empresaId);
       }
 
       const url = `${base.replace(/\/+$/, '')}${endpoint}`;
       this.logger.log(`Consultando ${endpoint} para query: ${query}`);
 
-      const res = await fetch(url, {
+      // fetchWithAuth renueva el token y reintenta una vez si Backend 1 responde 401
+      const res = await this.backend1.fetchWithAuth(url, {
         method: 'GET',
-        headers,
+        signal: AbortSignal.timeout(env.backend1ReplyTimeoutMs()),
       });
 
       this.logger.log(`Response status: ${res.status} for ${endpoint}`);
-
-      // Si token expiró (401), intentar renovar y reintentar UNA vez
-      if (res.status === 401) {
-        this.logger.warn(`Token expirado (401), intentando renovar...`);
-        const newToken = await this.refreshToken(base);
-        if (newToken) {
-          headers.authorization = `Bearer ${newToken}`;
-          const retryRes = await fetch(url, { method: 'GET', headers });
-          this.logger.log(`Retry response status: ${retryRes.status} for ${endpoint}`);
-          if (retryRes.ok) {
-            const data = await retryRes.json();
-            return this.formatResponse(endpoint, data);
-          }
-          return `El sistema de datos respondió HTTP ${retryRes.status}. No fue posible obtener la información.`;
-        }
-        return `El sistema de datos respondió HTTP 401. No fue posible obtener la información.`;
-      }
 
       if (!res.ok) {
         const errorText = await res.text().catch(() => '');
@@ -220,83 +203,15 @@ export class AssistantService implements OnModuleDestroy {
     }
   }
 
-  private async refreshToken(base: string): Promise<string | null> {
-    const email = process.env.CONTABILY_EMAIL;
-    const password = process.env.CONTABILY_PASSWORD;
-    if (!email || !password) {
-      this.logger.warn('CONTABILY_EMAIL o CONTABILY_PASSWORD no configurados');
-      return null;
-    }
-
-    try {
-      this.logger.log('Intentando login en Contabily para renovar token...');
-      const loginRes = await fetch(`${base}/api/v1/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-
-      if (!loginRes.ok) {
-        const err = await loginRes.text();
-        this.logger.warn(`Login falló: ${loginRes.status} - ${err}`);
-        return null;
-      }
-
-      const { tokens } = await loginRes.json();
-      const newToken = tokens.accessToken;
-
-      // Actualizar token en Render para que persista
-      await this.updateRenderToken(newToken);
-
-      this.logger.log('✅ Token renovado exitosamente');
-      return newToken;
-    } catch (err) {
-      this.logger.error(`Error renovando token: ${(err as Error).message}`);
-      return null;
-    }
-  }
-
-  private async updateRenderToken(newToken: string): Promise<void> {
-    const renderApiKey = process.env.RENDER_API_KEY;
-    const serviceId = process.env.RENDER_SERVICE_ID;
-    if (!renderApiKey || !serviceId) {
-      this.logger.warn('RENDER_API_KEY o RENDER_SERVICE_ID no configurados, token no persistirá');
-      return;
-    }
-
-    try {
-      const res = await fetch(
-        `https://api.render.com/v1/services/${serviceId}/env-vars`,
-        {
-          method: 'PATCH',
-          headers: {
-            Authorization: `Bearer ${renderApiKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ BACKEND1_SHARED_TOKEN: newToken }),
-        }
-      );
-
-      if (!res.ok) {
-        const err = await res.text();
-        this.logger.warn(`No se pudo actualizar token en Render: ${res.status} - ${err}`);
-      } else {
-        this.logger.log('✅ Token actualizado en Render');
-      }
-    } catch (err) {
-      this.logger.warn(`Error actualizando token en Render: ${(err as Error).message}`);
-    }
-  }
-
-  private async activateEmpresa(empresaId: string, headers: Record<string, string>): Promise<void> {
-    const base = env.backend1BaseUrl();
+  private async activateEmpresa(empresaId: string): Promise<void> {
+    const base = this.backend1.baseUrl;
     if (!base) return;
 
     try {
       const url = `${base.replace(/\/+$/, '')}/api/v1/empresas/${empresaId}/activar`;
-      const res = await fetch(url, {
+      const res = await this.backend1.fetchWithAuth(url, {
         method: 'POST',
-        headers,
+        signal: AbortSignal.timeout(10000),
       });
 
       if (!res.ok) {

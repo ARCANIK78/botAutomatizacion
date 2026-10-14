@@ -1,6 +1,7 @@
 import { AssistantService } from './assistant.service';
 import type { LlmResult, LlmService } from './llm.service';
 import type { InboundMessage } from '../whatsapp/whatsapp.service';
+import { Backend1AuthService } from '../common/backend1-auth.service';
 
 const payload: InboundMessage = {
   id: '1',
@@ -12,7 +13,10 @@ const payload: InboundMessage = {
 };
 
 function buildService(chat: jest.Mock, enabled = true): AssistantService {
-  return new AssistantService({ enabled, chat } as unknown as LlmService);
+  return new AssistantService(
+    { enabled, chat } as unknown as LlmService,
+    new Backend1AuthService(),
+  );
 }
 
 describe('AssistantService', () => {

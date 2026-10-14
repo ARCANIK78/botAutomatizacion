@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { WhatsappService } from './whatsapp/whatsapp.service';
+import { Backend1AuthService } from './common/backend1-auth.service';
 
 describe('AppController', () => {
   let appController: AppController;
@@ -21,6 +22,7 @@ describe('AppController', () => {
       providers: [
         AppService,
         { provide: WhatsappService, useValue: whatsappStub },
+        { provide: Backend1AuthService, useValue: { diagnose: jest.fn() } },
       ],
     }).compile();
 

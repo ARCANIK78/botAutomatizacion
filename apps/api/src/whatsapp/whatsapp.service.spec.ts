@@ -1,4 +1,5 @@
 import { AssistantService } from '../assistant/assistant.service';
+import { Backend1AuthService } from '../common/backend1-auth.service';
 import { AllowlistService } from './allowlist.service';
 import { WhatsappService } from './whatsapp.service';
 
@@ -28,6 +29,7 @@ describe('WhatsappService - resolución de remitente LID', () => {
     const service = new WhatsappService(
       assistant as unknown as AssistantService,
       allowlist,
+      new Backend1AuthService(),
     );
 
     const sock: Sock = {

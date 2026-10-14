@@ -103,6 +103,33 @@ Recomendaciones para estabilidad:
 
 > El free tier se duerme sin tráfico y corta el WebSocket de WhatsApp; para conexión 24/7 considera un plan de pago o mantener el keep-alive activo.
 
+### Renovación automática del token de Contabily
+
+El `accessToken` de Contabily caduca cada 24 h. `Backend1AuthService` lo
+renueva automáticamente: cuando Backend 1 responde `401`, hace login con
+`CONTABILY_EMAIL`/`CONTABILY_PASSWORD`, reemplaza el token en memoria y
+reintenta la petición original una sola vez. Aplica a `EmpresasService`
+(listado del panel), el asistente y el reenvío de entrantes.
+
+- **Importante**: las credenciales son las del **usuario de Contabily**, con el
+  correo tal como está registrado (se respeta mayúsculas/minúsculas).
+- Para que el token renovado sobreviva al próximo deploy, define
+  `RENDER_API_KEY` y `RENDER_SERVICE_ID` (el bot hace un `PATCH` de
+  `BACKEND1_SHARED_TOKEN` vía API de Render). Sin ellas, el token se renueva
+  en caliente pero la env var vieja queda desactualizada.
+
+### Diagnóstico de conectividad con Backend 1
+
+Si el panel muestra **"No hay empresas en Backend 1"**, el problema suele ser
+la red o el token. Para distinguirlos, desde el Shell de Render:
+
+```bash
+curl http://localhost:$PORT/api/health/backend1
+```
+
+El endpoint prueba por separado `login` (DNS/TLS/ruta) y `empresas` (token
+vigente y token renovado), devolviendo el HTTP y el tiempo de cada paso.
+
 ## Notas
 
 - La sesión de Baileys se guarda en `WHATSAPP_SESSION_PATH` (por defecto `./data/auth`, incluido en `.gitignore`).

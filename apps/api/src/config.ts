@@ -127,6 +127,11 @@ export const env = {
     return Number(process.env.BACKEND1_REPLY_TIMEOUT_MS ?? 10000);
   },
 
+  /** Presupuesto para el primer contacto con Backend 1 (puede estar dormido). */
+  backend1StartupTimeoutMs(): number {
+    return Number(process.env.BACKEND1_STARTUP_TIMEOUT_MS ?? 45000);
+  },
+
   fallbackReply(): string {
     return (
       process.env.FALLBACK_REPLY ??

@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { env } from '../config';
+import { Backend1AuthService } from '../common/backend1-auth.service';
 
 export interface Empresa {
   id: string;
@@ -11,28 +12,29 @@ export interface Empresa {
 export class EmpresasService {
   private readonly logger = new Logger(EmpresasService.name);
 
+  constructor(private readonly backend1: Backend1AuthService) {}
+
   async listar(): Promise<Empresa[]> {
     const base = env.empresasBackendUrl();
-    const token = env.sharedToken();
     if (!base) {
       this.logger.warn(
         'EMPRESAS_BACKEND_URL no configurado; retornando lista vacía',
       );
       return [];
     }
-    if (!token) {
+    if (!this.backend1.getToken()) {
       this.logger.warn(
-        'BACKEND1_SHARED_TOKEN no configurado; no se puede autenticar con Backend 1',
+        'Sin token de Backend 1 (BACKEND1_SHARED_TOKEN vacío y CONTABILY_* sin configurar); no se puede autenticar',
       );
       return [];
     }
 
+    const url = `${base.replace(/\/+$/, '')}/api/v1/empresas`;
     try {
-      const res = await fetch(`${base.replace(/\/+$/, '')}/api/v1/empresas`, {
-        signal: AbortSignal.timeout(5000),
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+      // El presupuesto cubre el login + la consulta: con Render dormido el
+      // primer arranque tarda varios segundos, y fallar ahí vaciaba el panel.
+      const res = await this.backend1.fetchWithAuth(url, {
+        signal: AbortSignal.timeout(env.backend1StartupTimeoutMs()),
       });
       if (!res.ok) {
         this.logger.warn(`Backend empresas respondió HTTP ${res.status}`);

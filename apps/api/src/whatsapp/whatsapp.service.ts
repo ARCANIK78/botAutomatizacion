@@ -11,6 +11,7 @@ import QRCode from 'qrcode';
 import pino from 'pino';
 import { AssistantService } from '../assistant/assistant.service';
 import { decideAccess } from '../common/access';
+import { Backend1AuthService } from '../common/backend1-auth.service';
 import { normalizePhone } from '../common/phone';
 import { env } from '../config';
 import { AllowlistService } from './allowlist.service';
@@ -65,6 +66,7 @@ export class WhatsappService implements OnModuleDestroy {
   constructor(
     private readonly assistant: AssistantService,
     private readonly allowlist: AllowlistService,
+    private readonly backend1: Backend1AuthService,
   ) {}
 
   setOnConnected(callback: OnConnectedCallback): void {
@@ -399,25 +401,21 @@ export class WhatsappService implements OnModuleDestroy {
   }
 
   private async forwardInbound(payload: InboundMessage): Promise<void> {
-    const base = env.backend1BaseUrl();
+    const base = this.backend1.baseUrl;
     if (!base) return;
 
     const url = `${base.replace(/\/+$/, '')}${env.backend1InboundPath()}`;
-    const headers: Record<string, string> = {
-      'content-type': 'application/json',
-    };
-    const token = env.sharedToken();
-    if (token) headers.authorization = `Bearer ${token}`;
 
     try {
-      const res = await fetch(url, {
+      const res = await this.backend1.fetchWithAuth(url, {
         method: 'POST',
-        headers,
+        headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           ...payload,
           empresaId: this.empresaId,
           empresaNombre: this.empresaNombre,
         }),
+        signal: AbortSignal.timeout(env.backend1ReplyTimeoutMs()),
       });
       if (!res.ok) {
         this.logger.warn(
