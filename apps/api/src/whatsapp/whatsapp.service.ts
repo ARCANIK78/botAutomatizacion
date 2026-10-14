@@ -369,7 +369,10 @@ export class WhatsappService implements OnModuleDestroy {
     }
 
     if (this.assistant?.enabled) {
-      const reply = await this.assistant.reply(payload);
+      const reply = await this.assistant.reply({
+        ...payload,
+        empresaId: this.empresaId,
+      });
       if (reply) {
         await this.sendReply(payload.from, reply);
         return;

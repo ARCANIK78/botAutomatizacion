@@ -112,7 +112,7 @@ export class WhatsappController {
 
   @Post('test-llm')
   @UseGuards(AdminGuard)
-  async testLlm(@Body() body: { text?: string; from?: string }) {
+  async testLlm(@Body() body: { text?: string; from?: string; empresaId?: string }) {
     const text = String(body?.text ?? '').trim();
     if (!text) return { ok: false, error: 'Falta el campo "text"' };
     const fromNumber = String(body?.from ?? '59170000000').replace(/\D/g, '');
@@ -123,6 +123,7 @@ export class WhatsappController {
       body: text,
       timestamp: Date.now(),
       chatType: 'direct',
+      empresaId: body.empresaId,
     });
     return { ok: true, enabled: this.assistant.enabled, reply };
   }

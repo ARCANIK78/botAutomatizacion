@@ -9,6 +9,7 @@ export interface AssistantInbound {
   body: string;
   timestamp: number;
   chatType: 'direct' | 'group';
+  empresaId?: string;
 }
 
 const CONSULT_TOOL: LlmTool = {
@@ -171,6 +172,11 @@ export class AssistantService implements OnModuleDestroy {
         return 'No sé cómo consultar esa información. Pregunta por: plan de cuentas, clientes, productos, saldo, compras, gastos, proveedores, balance, etc.';
       }
 
+      // Activar la empresa antes de consultar
+      if (payload.empresaId) {
+        await this.activateEmpresa(payload.empresaId, headers);
+      }
+
       const url = `${base.replace(/\/+$/, '')}${endpoint}`;
       this.logger.log(`Consultando ${endpoint} para query: ${query}`);
 
@@ -194,6 +200,28 @@ export class AssistantService implements OnModuleDestroy {
         `No se pudo consultar a backend 1: ${(err as Error).message}`,
       );
       return 'No se pudo contactar al sistema de datos. Informa al usuario que intente más tarde.';
+    }
+  }
+
+  private async activateEmpresa(empresaId: string, headers: Record<string, string>): Promise<void> {
+    const base = env.backend1BaseUrl();
+    if (!base) return;
+
+    try {
+      const url = `${base.replace(/\/+$/, '')}/api/v1/empresas/${empresaId}/activar`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+      });
+
+      if (!res.ok) {
+        const errorText = await res.text().catch(() => '');
+        this.logger.warn(`No se pudo activar empresa ${empresaId}: HTTP ${res.status} - ${errorText.slice(0, 200)}`);
+      } else {
+        this.logger.log(`Empresa ${empresaId} activada correctamente`);
+      }
+    } catch (err) {
+      this.logger.warn(`Error activando empresa ${empresaId}: ${(err as Error).message}`);
     }
   }
 
