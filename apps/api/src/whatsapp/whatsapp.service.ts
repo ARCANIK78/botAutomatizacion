@@ -12,6 +12,7 @@ import pino from 'pino';
 import { AssistantService } from '../assistant/assistant.service';
 import { decideAccess } from '../common/access';
 import { Backend1AuthService } from '../common/backend1-auth.service';
+import { SessionStorageService } from '../common/session-storage.service';
 import { normalizePhone } from '../common/phone';
 import { env } from '../config';
 import { AllowlistService } from './allowlist.service';
@@ -75,6 +76,7 @@ export class WhatsappService implements OnModuleDestroy {
     private readonly assistant: AssistantService,
     private readonly allowlist: AllowlistService,
     private readonly backend1: Backend1AuthService,
+    private readonly sessionStorage: SessionStorageService,
   ) {}
 
   setOnConnected(callback: OnConnectedCallback): void {
@@ -156,6 +158,12 @@ export class WhatsappService implements OnModuleDestroy {
       this.baileys = mod;
 
       const sessionPath = this.sessionPath();
+      const persistente = await this.sessionStorage.esPersistente();
+      if (!persistente && process.env.RENDER === 'true') {
+        this.logger.warn(
+          `${this.empresaNombre}: ${this.sessionStorage.check(persistente).detalle}`,
+        );
+      }
       await mkdir(sessionPath, { recursive: true });
       const { state, saveCreds } = await mod.useMultiFileAuthState(sessionPath);
       const makeSocket = mod.default ?? mod.makeWASocket;

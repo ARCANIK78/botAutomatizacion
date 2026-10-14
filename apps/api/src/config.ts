@@ -42,6 +42,15 @@ export const env = {
     );
   },
 
+  /**
+   * true si la ruta de sesión está declarada explícitamente.
+   * Render sin Persistent Disk descarta el filesystem en cada deploy, así
+   * que una ruta relativa (o la ausente) significa que la sesión se pierde.
+   */
+  sessionPathExplicit(): boolean {
+    return (process.env.WHATSAPP_SESSION_PATH ?? '').trim().length > 0;
+  },
+
   empresasBackendUrl(): string {
     return process.env.EMPRESAS_BACKEND_URL ?? '';
   },

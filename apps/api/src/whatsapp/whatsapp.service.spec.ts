@@ -1,5 +1,6 @@
 import { AssistantService } from '../assistant/assistant.service';
 import { Backend1AuthService } from '../common/backend1-auth.service';
+import { SessionStorageService } from '../common/session-storage.service';
 import { AllowlistService } from './allowlist.service';
 import { WhatsappService } from './whatsapp.service';
 
@@ -30,6 +31,7 @@ describe('WhatsappService - resolución de remitente LID', () => {
       assistant as unknown as AssistantService,
       allowlist,
       new Backend1AuthService(),
+      new SessionStorageService(),
     );
 
     const sock: Sock = {

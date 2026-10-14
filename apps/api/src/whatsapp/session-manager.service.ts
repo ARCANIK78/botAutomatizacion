@@ -4,6 +4,7 @@ import { AssistantService } from '../assistant/assistant.service';
 import { AllowlistService } from './allowlist.service';
 import { EmpresasService } from '../empresas/empresas.service';
 import { Backend1AuthService } from '../common/backend1-auth.service';
+import { SessionStorageService } from '../common/session-storage.service';
 
 export interface SessionInfo {
   empresaId: string;
@@ -24,6 +25,7 @@ export class SessionManagerService {
     private readonly allowlist: AllowlistService,
     private readonly empresas: EmpresasService,
     private readonly backend1: Backend1AuthService,
+    private readonly sessionStorage: SessionStorageService,
   ) {}
 
   getOrCreate(empresaId: string, empresaNombre: string): WhatsappService {
@@ -33,6 +35,7 @@ export class SessionManagerService {
         this.assistant,
         this.allowlist,
         this.backend1,
+        this.sessionStorage,
       );
       session.setEmpresaId(empresaId);
       session.setEmpresaNombre(empresaNombre);
