@@ -159,6 +159,9 @@ export class AssistantService implements OnModuleDestroy {
   ): Promise<string> {
     const base = this.backend1.baseUrl;
     if (!base) {
+      this.logger.warn(
+        'BACKEND1_BASE_URL sin configurar: no se puede consultar el sistema contable',
+      );
       return env.dataUnavailableReply();
     }
 

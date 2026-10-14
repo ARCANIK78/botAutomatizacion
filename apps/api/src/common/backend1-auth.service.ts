@@ -24,9 +24,29 @@ export class Backend1AuthService {
     this.token = env.sharedToken();
   }
 
-  /** Base URL preferida: contabily si existe, si no backend 1. */
+  /**
+   * Base de las consultas de datos (asistente, reenvío de entrantes).
+   * Debe ser BACKEND1_BASE_URL: apunta al servicio que expone
+   * /api/v1/contabilidad, /api/v1/clientes, etc. y el webhook entrante.
+   */
   get baseUrl(): string {
-    return env.empresasBackendUrl() || env.backend1BaseUrl();
+    return env.backend1BaseUrl();
+  }
+
+  /**
+   * Base del servicio Contabily. Usada solo para listar empresas del panel
+   * y para el login de renovación de token, que sí viven en EMPRESAS_BACKEND_URL.
+   */
+  get contabilyUrl(): string {
+    return env.empresasBackendUrl();
+  }
+
+  /**
+   * Base para el login de renovación: si Contabily está declarado es el
+   * servicio correcto; si no, backend 1 comparte la misma API de auth.
+   */
+  private get authUrl(): string {
+    return this.contabilyUrl || this.baseUrl;
   }
 
   getToken(): string {
@@ -51,7 +71,7 @@ export class Backend1AuthService {
     init: RequestInit = {},
   ): Promise<Response> {
     const response = await fetch(url, this.withAuthInit(init));
-    if (response.status !== 401 || !this.baseUrl) return response;
+    if (response.status !== 401 || !this.authUrl) return response;
 
     const fresh = await this.refresh();
     if (!fresh) return response;
@@ -84,7 +104,7 @@ export class Backend1AuthService {
   }
 
   private async doRefresh(): Promise<string | null> {
-    const base = this.baseUrl;
+    const base = this.authUrl;
     const email = process.env.CONTABILY_EMAIL;
     const password = process.env.CONTABILY_PASSWORD;
 
@@ -178,32 +198,39 @@ export class Backend1AuthService {
   async diagnose(): Promise<{
     ok: boolean;
     baseUrl: string;
+    contabilyUrl: string;
     pasos: Array<{ paso: string; ok: boolean; detalle: string }>;
   }> {
     const pasos: Array<{ paso: string; ok: boolean; detalle: string }> = [];
-    const base = this.baseUrl;
+    const contabily = this.contabilyUrl;
+    const data = this.baseUrl;
 
     pasos.push({
       paso: 'config',
-      ok: !!base,
-      detalle: base
-        ? `baseUrl=${base}`
-        : 'EMPRESAS_BACKEND_URL y BACKEND1_BASE_URL sin configurar',
+      ok: !!contabily || !!data,
+      detalle: [
+        `EMPRESAS_BACKEND_URL=${contabily || '(sin configurar)'}`,
+        `BACKEND1_BASE_URL=${data || '(sin configurar)'}`,
+      ].join(' · '),
     });
-    if (!base) return { ok: false, baseUrl: base, pasos };
+    if (!contabily && !data) return { ok: false, baseUrl: data, contabilyUrl: contabily, pasos };
 
     // 1) Login (prueba DNS + TLS + ruta de auth)
     const email = process.env.CONTABILY_EMAIL;
     const password = process.env.CONTABILY_PASSWORD;
+    const loginBase = this.authUrl;
     let loginOk = false;
     const t0 = Date.now();
     try {
-      const res = await fetch(`${base.replace(/\/+$/, '')}/api/v1/auth/login`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-        signal: AbortSignal.timeout(15000),
-      });
+      const res = await fetch(
+        `${loginBase.replace(/\/+$/, '')}/api/v1/auth/login`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+          signal: AbortSignal.timeout(15000),
+        },
+      );
       loginOk = res.status === 200;
       pasos.push({
         paso: 'login',
@@ -222,7 +249,7 @@ export class Backend1AuthService {
     const t1 = Date.now();
     try {
       const res = await fetch(
-        `${base.replace(/\/+$/, '')}/api/v1/empresas`,
+        `${contabily.replace(/\/+$/, '')}/api/v1/empresas`,
         {
           headers: this.authHeaders(),
           signal: AbortSignal.timeout(15000),
@@ -249,7 +276,7 @@ export class Backend1AuthService {
       const t2 = Date.now();
       try {
         const res = await fetch(
-          `${base.replace(/\/+$/, '')}/api/v1/empresas`,
+          `${contabily.replace(/\/+$/, '')}/api/v1/empresas`,
           { headers: this.authHeaders(), signal: AbortSignal.timeout(15000) },
         );
         pasos.push({
@@ -272,7 +299,34 @@ export class Backend1AuthService {
       });
     }
 
-    return { ok: pasos.every((p) => p.ok), baseUrl: base, pasos };
+    // 4) plan-cuentas: el endpoint que consulta el asistente.
+    // Es el paso que revela que BACKEND1_BASE_URL falta o apunta mal.
+    const t3 = Date.now();
+    try {
+      const res = await fetch(
+        `${data.replace(/\/+$/, '')}/api/v1/contabilidad/plan-cuentas`,
+        { headers: this.authHeaders(), signal: AbortSignal.timeout(15000) },
+      );
+      const body = await res.text();
+      pasos.push({
+        paso: 'consultas del asistente (BACKEND1_BASE_URL)',
+        ok: res.ok,
+        detalle: `HTTP ${res.status} en ${Date.now() - t3}ms${res.ok ? ` - ${countEmpresas(body)} cuenta(s)` : ` - ${body.slice(0, 200)}`}`,
+      });
+    } catch (err) {
+      pasos.push({
+        paso: 'consultas del asistente (BACKEND1_BASE_URL)',
+        ok: false,
+        detalle: `Fallo de red/DNS/TLS: ${(err as Error).message}`,
+      });
+    }
+
+    return {
+      ok: pasos.every((p) => p.ok),
+      baseUrl: data,
+      contabilyUrl: contabily,
+      pasos,
+    };
   }
 }
 
