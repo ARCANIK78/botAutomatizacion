@@ -16,13 +16,12 @@ export class AppService implements OnApplicationBootstrap {
 
   async health() {
     const status = this.whatsapp.getStatus(false);
-    const persistente = await this.sessionStorage.esPersistente();
     return {
       status: 'ok' as const,
       uptime: Math.round(process.uptime()),
       time: new Date().toISOString(),
       whatsapp: { state: status.state, user: status.user },
-      sesion: this.sessionStorage.check(persistente),
+      sesion: await this.sessionStorage.check(),
     };
   }
 }

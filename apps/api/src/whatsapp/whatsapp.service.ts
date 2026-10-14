@@ -158,11 +158,9 @@ export class WhatsappService implements OnModuleDestroy {
       this.baileys = mod;
 
       const sessionPath = this.sessionPath();
-      const persistente = await this.sessionStorage.esPersistente();
-      if (!persistente && process.env.RENDER === 'true') {
-        this.logger.warn(
-          `${this.empresaNombre}: ${this.sessionStorage.check(persistente).detalle}`,
-        );
+      const estadoSesion = await this.sessionStorage.check();
+      if (!estadoSesion.persistente && process.env.RENDER === 'true') {
+        this.logger.warn(`${this.empresaNombre}: ${estadoSesion.detalle}`);
       }
       await mkdir(sessionPath, { recursive: true });
       const { state, saveCreds } = await mod.useMultiFileAuthState(sessionPath);

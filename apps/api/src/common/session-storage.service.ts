@@ -1,5 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { stat } from 'node:fs/promises';
 import { Injectable, Logger } from '@nestjs/common';
 import { env } from '../config';
 
@@ -10,81 +9,82 @@ import { env } from '../config';
  * tier. La sesión de Baileys solo sobrevive si WHATSAPP_SESSION_PATH apunta a
  * un Persistent Disk adjunto al servicio.
  *
- * No se infiere por el nombre de la ruta (Render permite declarar /data sin
- * adjuntar disco, y una ruta relativa puede caer dentro de un disco montado).
- * En su lugar se comprueba empíricamente, escribiendo y borrando un fichero
- * de prueba: es la única señal que distingue con certeza un disco efímero de
- * uno persistente.
+ * La persistencia NO se puede probar escribiendo un fichero y volviendo a
+ * leerlo: el filesystem efímero de Render admite escritura y lectura sin
+ * problema, y el fichero desaparece recién en el próximo deploy. Esa
+ * comprobación pasa igual en un disco efímero y da falsa confianza.
+ *
+ * Lo único que distingue ambos casos es el sistema de ficheros subyacente.
+ * Render monta los Persistent Disks en su propio dispositivo, separado del
+ * que contiene el código de la aplicación. Se comparan los dispositivos con
+ * stat().dev. Por eso se mide el dispositivo, no se escribe nada.
  */
 @Injectable()
 export class SessionStorageService {
   private readonly logger = new Logger(SessionStorageService.name);
   private warned = false;
-  private persistente: boolean | null = null;
+  private persistencia: { persistente: boolean; detalle: string } | null = null;
 
   /**
-   * Comprueba si la ruta de sesión sobrevive a un reinicio, escribiendo un
-   * fichero temporal y verificando que sigue ahí. Cachea el resultado: la
-   * respuesta no cambia durante la vida del proceso.
+   * true solo si la ruta de sesión vive en un dispositivo distinto al del
+   * código de la aplicación. Cachea el resultado: el disco no cambia durante
+   * la vida del proceso.
    */
   async esPersistente(): Promise<boolean> {
-    if (this.persistente !== null) return this.persistente;
-
-    const base = env.sessionBase();
-    const marca = join(base, '.persist-check');
-    const contenido = String(Date.now());
-
-    try {
-      await mkdir(dirname(marca), { recursive: true });
-      await writeFile(marca, contenido);
-      const leido = await readFile(marca, 'utf8');
-      await rm(marca, { force: true });
-
-      // Un disco de solo lectura (mal montado) permite leer pero no escribir
-      // de forma fiable; se considera no persistente porque Baileys no podrá
-      // guardar las credenciales.
-      this.persistente = leido === contenido;
-    } catch {
-      // La ruta no existe todavía o no admite escritura: en el primer
-      // arranque es esperado, pero no se puede prometer persistencia.
-      this.persistente = false;
-    }
-
-    return this.persistente;
+    return (await this.diagnosticar()).persistente;
   }
 
-  /**
-   * Describe el estado del almacenamiento. Como la comprobación real es
-   * asíncrona, se puede forzar con `esPersistente()` antes de llamar.
-   */
-  check(persistente: boolean): { persistente: boolean; path: string; detalle: string } {
+  private async diagnosticar(): Promise<{ persistente: boolean; detalle: string }> {
+    if (this.persistencia) return this.persistencia;
+
     const base = env.sessionBase();
     const enRender = process.env.RENDER === 'true';
-    const declarada = env.sessionPathExplicit();
 
-    if (!declarada) {
-      return {
+    if (!env.sessionPathExplicit()) {
+      return (this.persistencia = {
         persistente: false,
-        path: base,
         detalle:
           'WHATSAPP_SESSION_PATH sin configurar: se usa una ruta relativa dentro del filesystem efímero. La sesión se pierde en cada deploy.',
-      };
+      });
     }
 
-    if (persistente) {
-      return {
-        persistente: true,
-        path: base,
-        detalle: `Sesión en ${base}: la ruta admite escritura y sobrevive a redeploys.`,
-      };
+    let sesionDev: number;
+    let codigoDev: number;
+    try {
+      const [s, c] = await Promise.all([stat(base), stat(process.cwd())]);
+      sesionDev = Number(s.dev);
+      codigoDev = Number(c.dev);
+    } catch (err) {
+      // La ruta no existe todavía: es esperado en el primer arranque. Sin
+      // poder medirla no se puede afirmar que sea persistente.
+      return (this.persistencia = {
+        persistente: false,
+        detalle: `No se pudo medir ${base}: ${(err as Error).message}. Si es el primer arranque, la sesión se creará al conectar.`,
+      });
     }
 
+    // Mismo dispositivo => está en el filesystem de la aplicación, que en
+    // Render se reconstruye entero en cada deploy.
+    const persistente = enRender && sesionDev !== codigoDev;
+
+    this.persistencia = {
+      persistente,
+      detalle: persistente
+        ? `Sesión en ${base} (dispositivo ${sesionDev}, separado del código en ${codigoDev}): sobrevive a redeploys.`
+        : enRender
+          ? `WHATSAPP_SESSION_PATH=${base} está en el mismo disco que la aplicación (dispositivo ${sesionDev}), no en un Persistent Disk. En Render esa ruta se borra en cada deploy: habrá que escanear el QR de nuevo.`
+          : `WHATSAPP_SESSION_PATH=${base} (entorno local, dispositivo ${sesionDev}): la sesión se guarda en tu disco.`,
+    };
+    return this.persistencia;
+  }
+
+  /** Estado para /api/health y los logs. */
+  async check(): Promise<{ persistente: boolean; path: string; detalle: string }> {
+    const { detalle } = await this.diagnosticar();
     return {
-      persistente: false,
-      path: base,
-      detalle: enRender
-        ? `WHATSAPP_SESSION_PATH=${base} no admite persistencia. En Render esa ruta se borra en cada deploy: habrá que escanear el QR de nuevo.`
-        : `WHATSAPP_SESSION_PATH=${base} no admite escritura: Baileys no podrá guardar la sesión.`,
+      persistente: this.persistencia?.persistente ?? false,
+      path: env.sessionBase(),
+      detalle,
     };
   }
 
@@ -93,9 +93,7 @@ export class SessionStorageService {
     if (this.warned) return;
     this.warned = true;
 
-    const persistente = await this.esPersistente();
-    const status = this.check(persistente);
-
+    const status = await this.check();
     if (status.persistente) {
       this.logger.log(status.detalle);
     } else {

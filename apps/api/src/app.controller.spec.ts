@@ -18,9 +18,8 @@ describe('AppController', () => {
   };
 
   const sessionStorageStub = {
-    esPersistente: jest.fn().mockResolvedValue(false),
-    check: (persistente: boolean) => ({
-      persistente,
+    check: jest.fn().mockResolvedValue({
+      persistente: false,
       path: './data/auth',
       detalle: 'WHATSAPP_SESSION_PATH no configurada',
     }),
