@@ -23,6 +23,13 @@ type WAMessage = import('@whiskeysockets/baileys').WAMessage;
 
 const SOCKET_SETTLE_MS = 500;
 
+// Tiempo mínimo entre QR expuestos al panel. Baileys genera uno nuevo cada
+// pocos segundos; sin este filtro el panel cambia el código antes de poder
+// escanearlo. Debe ser >= al reintento del frontend para no pisarse.
+const QR_MIN_INTERVAL_MS = Number(
+  process.env.WA_QR_MIN_INTERVAL_MS ?? 60_000,
+);
+
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -54,6 +61,7 @@ export class WhatsappService implements OnModuleDestroy {
   private baileys: BaileysModule | null = null;
   private state: WaState = 'disconnected';
   private qrDataUrl: string | null = null;
+  private qrEmittedAt = 0;
   private user: string | null = null;
   private attempts = 0;
   private generation = 0;
@@ -140,6 +148,7 @@ export class WhatsappService implements OnModuleDestroy {
 
       this.state = 'connecting';
       this.qrDataUrl = null;
+      this.qrEmittedAt = 0;
       this.user = null;
 
       const mod = await import('@whiskeysockets/baileys');
@@ -211,8 +220,21 @@ export class WhatsappService implements OnModuleDestroy {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
+      const now = Date.now();
+      const sinceLast = now - this.qrEmittedAt;
+      // Baileys rota el QR cada pocos segundos; sin este filtro el panel
+      // mostraría un código distinto cada pocos segundos y nunca podría
+      // escanearse. Solo se expone uno nuevo si ya pasó el tiempo mínimo.
+      if (sinceLast < QR_MIN_INTERVAL_MS) {
+        this.logger.debug(
+          `QR de ${this.empresaNombre} rotado por Baileys, se mantiene el anterior (${Math.round(sinceLast)}ms < ${QR_MIN_INTERVAL_MS}ms)`,
+        );
+        return;
+      }
+
       try {
         this.qrDataUrl = await QRCode.toDataURL(qr);
+        this.qrEmittedAt = now;
         this.state = 'waiting_for_qr';
         this.logger.log(
           `QR listo para ${this.empresaNombre}: escanear desde WhatsApp > Dispositivos vinculados`,

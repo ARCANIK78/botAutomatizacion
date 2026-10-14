@@ -25,6 +25,10 @@ const LABELS: Record<WaState, string> = {
   connected: 'Conectado',
 }
 
+// El backend solo expone un QR nuevo cada WA_QR_MIN_INTERVAL_MS (60s), así
+// que el reintento debe ir por encima de ese umbral.
+const QR_RETRY_DELAY_MS = 65_000
+
 export default function App() {
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [empresas, setEmpresas] = useState<Empresa[]>([])
@@ -62,9 +66,10 @@ export default function App() {
     setApiUp(next !== null)
     if (next) {
       setStatus(next)
-      // Persistir QR si está en waiting_for_qr y hay QR nuevo
+      // El backend solo cambia el QR cada WA_QR_MIN_INTERVAL_MS, así que el
+      // polling no debe pisar el código vigente con una imagen idéntica.
       if (next.state === 'waiting_for_qr' && next.qr) {
-        setPersistedQr(next.qr)
+        setPersistedQr((prev) => (prev === next.qr ? prev : next.qr))
       }
       // Limpiar QR persistido si se conecta o desconecta
       if (next.state === 'connected' || next.state === 'disconnected') {
@@ -102,7 +107,9 @@ export default function App() {
     void refreshAllowed()
   }
 
-  // Poll para QR hasta que aparezca o falle - reintenta cada 30s si no se escanea
+  // Poll para QR hasta que aparezca o falle. El backend expone un QR nuevo
+  // como máximo cada WA_QR_MIN_INTERVAL_MS (60s), así que el reintento debe
+  // ir por encima de ese umbral para no pisar el código vigente.
   const waitForQr = useCallback(async (empresaId: string, empresaNombre: string) => {
     setBusy(true)
     // Limpiar QR previo al iniciar nueva conexión
@@ -114,9 +121,8 @@ export default function App() {
         await reconnect(empresaId, empresaNombre)
         addLog(`Sesión iniciada, esperando QR...`)
 
-        // Poll cada 1.5s hasta que haya QR o esté conectado (máx 30s)
-        for (let i = 0; i < 20; i++) {
-          
+        // Poll rápido mientras aparece el primer QR (máx 60s)
+        for (let i = 0; i < 40; i++) {
           await new Promise((r) => setTimeout(r, 1500))
           const st = await fetchStatus(empresaId)
           if (st) {
@@ -138,8 +144,8 @@ export default function App() {
             }
           }
         }
-        // 30s pasaron sin que se escaneara el QR -> reintentar
-        addLog('QR expirado (30s), generando uno nuevo...')
+        // 60s pasaron sin QR -> reintentar para pedir uno nuevo al backend
+        addLog('Aún no hay QR, reintentando...')
         return true // Reintentar
       } catch (err) {
         addLog(`Error: ${(err as Error).message}`)
@@ -147,13 +153,13 @@ export default function App() {
       }
     }
 
-    // Bucle de reintentos cada 30s hasta conectar o cancelar
+    // Bucle de reintentos hasta conectar o cancelar
     let shouldRetry = true
     while (shouldRetry) {
       shouldRetry = await attemptConnection()
       if (shouldRetry) {
-        // Pequeña pausa antes de reintentar
-        await new Promise((r) => setTimeout(r, 1000))
+        // Pausa antes de reintentar: respeta el rate limit de QR del backend
+        await new Promise((r) => setTimeout(r, QR_RETRY_DELAY_MS))
       }
     }
     setBusy(false)
