@@ -78,8 +78,13 @@ export class AssistantService implements OnModuleDestroy {
     }
   }
 
+  /**
+   * true si hay a dónde consultar. Cualquiera de las dos variables sirve:
+   * en la configuración típica el servicio de datos y el de empresas es el
+   * mismo y basta EMPRESAS_BACKEND_URL.
+   */
   private get dataAvailable(): boolean {
-    return env.backend1BaseUrl().length > 0;
+    return this.backend1.baseUrl.length > 0;
   }
 
   private async run(payload: AssistantInbound): Promise<string> {

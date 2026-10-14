@@ -47,9 +47,14 @@ entrantes los responde un asistente con LLM:
 
 1. El usuario escribe por WhatsApp.
 2. El LLM decide si necesita datos del sistema contable.
-3. Si los necesita, llama a la función `consult_backend`, que hace un `POST`
-   síncrono a `{BACKEND1_BASE_URL}{BACKEND1_INBOUND_PATH}` con la consulta.
+3. Si los necesita, llama a la función `consult_backend`, que hace un `GET`
+   autenticado a un endpoint REST de contabilidad (`plan-cuentas`, `cajas`,
+   `gastos`, `compras`, etc.) del servicio contable.
 4. El LLM redacta la respuesta y el bot la envía al mismo chat.
+
+El servicio contable se resuelve como `BACKEND1_BASE_URL` si existe, y si no
+como `EMPRESAS_BACKEND_URL`. En la configuración típica, donde el servicio de
+datos y el de empresas es el mismo, basta declarar `EMPRESAS_BACKEND_URL`.
 
 Si el LLM o backend 1 fallan (timeout, `429`, caída), responde `FALLBACK_REPLY`.
 Sin `LLM_API_KEY` el bot vuelve al modo simple (solo reenvío de entrantes).

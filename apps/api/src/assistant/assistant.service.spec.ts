@@ -117,6 +117,7 @@ describe('AssistantService', () => {
 
   it('sin backend 1 responde la frase estándar si piden datos', async () => {
     delete process.env.BACKEND1_BASE_URL;
+    delete process.env.EMPRESAS_BACKEND_URL;
     const chat = jest.fn().mockResolvedValue({
       content:
         'Actualmente no podemos consultar con el servidor, por favor inténtalo más tarde.',
@@ -131,10 +132,10 @@ describe('AssistantService', () => {
     expect(reply).toContain('no podemos consultar con el servidor');
   });
 
-  it('ignora EMPRESAS_BACKEND_URL: solo BACKEND1_BASE_URL habilita el asistente', async () => {
-    // Regresión: si baseUrl prefería EMPRESAS_BACKEND_URL, el asistente
-    // seguía "habilitado" con esa base y construía URLs rotas para las
-    // consultas de datos, respondiendo el mensaje genérico de error.
+  it('habilita el asistente con EMPRESAS_BACKEND_URL cuando falta BACKEND1_BASE_URL', async () => {
+    // En la configuración típica el servicio de datos y el de empresas es el
+    // mismo, así que basta declarar EMPRESAS_BACKEND_URL. Sin este fallback
+    // el asistente ni siquiera ofrecía la herramienta de consulta.
     process.env.EMPRESAS_BACKEND_URL = 'https://contabily.test';
     delete process.env.BACKEND1_BASE_URL;
 
@@ -150,6 +151,23 @@ describe('AssistantService', () => {
     expect(reply).toBe('¡Hola! ¿En qué te ayudo?');
     expect(global.fetch).not.toHaveBeenCalled();
     const [, tools] = chat.mock.calls[0] as [unknown, unknown[]];
-    expect(tools).toEqual([]);
+    expect(tools).toHaveLength(1);
+  });
+
+  it('prefiere BACKEND1_BASE_URL sobre EMPRESAS_BACKEND_URL', async () => {
+    process.env.BACKEND1_BASE_URL = 'https://datos.test';
+    process.env.EMPRESAS_BACKEND_URL = 'https://contabily.test';
+
+    const chat = jest.fn().mockResolvedValue({
+      content: '¡Hola! ¿En qué te ayudo?',
+      toolCalls: [],
+    } satisfies LlmResult);
+    const service = buildService(chat);
+    global.fetch = jest.fn();
+
+    await service.reply(payload);
+
+    const [, tools] = chat.mock.calls[0] as [unknown, unknown[]];
+    expect(tools).toHaveLength(1);
   });
 });

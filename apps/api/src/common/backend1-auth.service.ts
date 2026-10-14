@@ -25,20 +25,25 @@ export class Backend1AuthService {
   }
 
   /**
-   * Base de las consultas de datos (asistente, reenvío de entrantes).
-   * Debe ser BACKEND1_BASE_URL: apunta al servicio que expone
-   * /api/v1/contabilidad, /api/v1/clientes, etc. y el webhook entrante.
+   * Base de las consultas de datos (asistente, reenvío de entrantes): el
+   * servicio que expone /api/v1/contabilidad, /api/v1/clientes, etc.
+   *
+   * BACKEND1_BASE_URL tiene prioridad para poder separar ambos servicios en
+   * el futuro. Si no está declarada se usa EMPRESAS_BACKEND_URL, que es la
+   * URL que el panel ya necesita para listar empresas. Verificado contra
+   * Contabily: ahí viven 12 de las 14 rutas que consulta el asistente, así
+   * que en la configuración típica basta con declarar una sola variable.
    */
   get baseUrl(): string {
-    return env.backend1BaseUrl();
+    return env.backend1BaseUrl() || env.empresasBackendUrl();
   }
 
   /**
-   * Base del servicio Contabily. Usada solo para listar empresas del panel
-   * y para el login de renovación de token, que sí viven en EMPRESAS_BACKEND_URL.
+   * Base del servicio Contabily. Usada para listar empresas del panel y para
+   * el login de renovación de token.
    */
   get contabilyUrl(): string {
-    return env.empresasBackendUrl();
+    return env.empresasBackendUrl() || env.backend1BaseUrl();
   }
 
   /**
@@ -205,12 +210,21 @@ export class Backend1AuthService {
     const contabily = this.contabilyUrl;
     const data = this.baseUrl;
 
+    const rawContabily = env.empresasBackendUrl();
+    const rawData = env.backend1BaseUrl();
+    const usaFallback = !rawData && !!rawContabily;
+
     pasos.push({
       paso: 'config',
       ok: !!contabily || !!data,
       detalle: [
-        `EMPRESAS_BACKEND_URL=${contabily || '(sin configurar)'}`,
-        `BACKEND1_BASE_URL=${data || '(sin configurar)'}`,
+        `EMPRESAS_BACKEND_URL=${rawContabily || '(sin configurar)'}`,
+        rawData
+          ? `BACKEND1_BASE_URL=${rawData}`
+          : usaFallback
+            ? 'BACKEND1_BASE_URL=(sin configurar, se reutiliza EMPRESAS_BACKEND_URL)'
+            : 'BACKEND1_BASE_URL=(sin configurar)',
+        `consultas del asistente -> ${data || '(sin destino)'}`,
       ].join(' · '),
     });
     if (!contabily && !data) return { ok: false, baseUrl: data, contabilyUrl: contabily, pasos };
@@ -256,7 +270,7 @@ export class Backend1AuthService {
         },
       );
       const body = await res.text();
-      const cantidad = res.ok ? countEmpresas(body) : null;
+      const cantidad = res.ok ? countRegistros(body) : null;
       pasos.push({
         paso: 'empresas (token vigente)',
         ok: res.ok,
@@ -282,7 +296,7 @@ export class Backend1AuthService {
         pasos.push({
           paso: 'empresas (tras renovar token)',
           ok: res.ok,
-          detalle: `HTTP ${res.status} en ${Date.now() - t2}ms${res.ok ? ` - ${countEmpresas(await res.text())} empresa(s)` : ''}`,
+          detalle: `HTTP ${res.status} en ${Date.now() - t2}ms${res.ok ? ` - ${countRegistros(await res.text())} empresa(s)` : ''}`,
         });
       } catch (err) {
         pasos.push({
@@ -299,8 +313,9 @@ export class Backend1AuthService {
       });
     }
 
-    // 4) plan-cuentas: el endpoint que consulta el asistente.
-    // Es el paso que revela que BACKEND1_BASE_URL falta o apunta mal.
+    // 4) plan-cuentas: el endpoint que consulta el asistente. Con el
+    // fallback puede apuntar a la misma base que el paso 2, pero se mantiene
+    // porque valida la ruta concreta que usa el asistente, no solo la raíz.
     const t3 = Date.now();
     try {
       const res = await fetch(
@@ -309,9 +324,9 @@ export class Backend1AuthService {
       );
       const body = await res.text();
       pasos.push({
-        paso: 'consultas del asistente (BACKEND1_BASE_URL)',
+        paso: 'consultas del asistente (plan de cuentas)',
         ok: res.ok,
-        detalle: `HTTP ${res.status} en ${Date.now() - t3}ms${res.ok ? ` - ${countEmpresas(body)} cuenta(s)` : ` - ${body.slice(0, 200)}`}`,
+        detalle: `HTTP ${res.status} en ${Date.now() - t3}ms${res.ok ? ` - ${countRegistros(body)} registro(s)` : ` - ${body.slice(0, 200)}`}`,
       });
     } catch (err) {
       pasos.push({
@@ -330,7 +345,7 @@ export class Backend1AuthService {
   }
 }
 
-function countEmpresas(body: string): number {
+function countRegistros(body: string): number {
   try {
     const data = JSON.parse(body) as unknown;
     if (Array.isArray(data)) return data.length;
