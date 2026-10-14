@@ -157,40 +157,168 @@ export class AssistantService implements OnModuleDestroy {
       return env.dataUnavailableReply();
     }
 
-    const url = `${base.replace(/\/+$/, '')}${env.backend1InboundPath()}`;
+    const token = env.sharedToken();
+    this.logger.log(`Token length: ${token?.length || 0}, base: ${base}`);
     const headers: Record<string, string> = {
       'content-type': 'application/json',
     };
-    const token = env.sharedToken();
     if (token) headers.authorization = `Bearer ${token}`;
 
     try {
+      // Detectar qué endpoint consultar según la query
+      const endpoint = this.detectEndpoint(query);
+      if (!endpoint) {
+        return 'No sé cómo consultar esa información. Pregunta por: plan de cuentas, clientes, productos, saldo, compras, gastos, proveedores, balance, etc.';
+      }
+
+      const url = `${base.replace(/\/+$/, '')}${endpoint}`;
+      this.logger.log(`Consultando ${endpoint} para query: ${query}`);
+
       const res = await fetch(url, {
-        method: 'POST',
+        method: 'GET',
         headers,
-        body: JSON.stringify({
-          type: 'query',
-          query,
-          from: payload.fromNumber,
-          fromJid: payload.from,
-          chatType: payload.chatType,
-          timestamp: payload.timestamp,
-        }),
-        signal: AbortSignal.timeout(env.backend1ReplyTimeoutMs()),
       });
 
+      this.logger.log(`Response status: ${res.status} for ${endpoint}`);
+
       if (!res.ok) {
-        this.logger.warn(`Backend 1 respondió HTTP ${res.status}`);
+        const errorText = await res.text().catch(() => '');
+        this.logger.warn(`Backend 1 (${endpoint}) respondió HTTP ${res.status}: ${errorText.slice(0, 200)}`);
         return `El sistema de datos respondió HTTP ${res.status}. No fue posible obtener la información.`;
       }
 
-      const text = await res.text();
-      return this.extractData(text);
+      const data = await res.json();
+      return this.formatResponse(endpoint, data);
     } catch (err) {
       this.logger.warn(
         `No se pudo consultar a backend 1: ${(err as Error).message}`,
       );
       return 'No se pudo contactar al sistema de datos. Informa al usuario que intente más tarde.';
+    }
+  }
+
+  private detectEndpoint(query: string): string | null {
+    const q = query.toLowerCase();
+
+    // Plan de cuentas
+    if (q.includes('plan de cuentas') || q.includes('cuentas contables') || q.includes('plan contable')) {
+      return '/api/v1/contabilidad/plan-cuentas';
+    }
+    if (q.includes('árbol de cuentas') || q.includes('arbol de cuentas')) {
+      return '/api/v1/contabilidad/plan-cuentas/arbol';
+    }
+    if (q.includes('cuentas con saldo') || q.includes('saldos de cuentas')) {
+      return '/api/v1/contabilidad/plan-cuentas/con-saldos';
+    }
+
+    // Balance / Estados financieros
+    if (q.includes('balance de comprobación') || q.includes('balance comprobacion')) {
+      return '/api/v1/contabilidad/balance-comprobacion';
+    }
+    if (q.includes('balance general') || q.includes('balance general')) {
+      return '/api/v1/contabilidad/balance-general';
+    }
+    if (q.includes('estado de resultados') || q.includes('estado resultados') || q.includes('pérdidas y ganancias')) {
+      return '/api/v1/contabilidad/estado-resultados';
+    }
+    if (q.includes('libro mayor')) {
+      return '/api/v1/contabilidad/libro-mayor';
+    }
+
+    // Cajas / Saldos
+    if (q.includes('saldo') || q.includes('caja') || q.includes('banco') || q.includes('cuentas financieras')) {
+      return '/api/v1/cajas/cuentas';
+    }
+
+    // Clientes
+    if (q.includes('cliente') || q.includes('clientes')) {
+      return '/api/v1/clientes';
+    }
+
+    // Proveedores
+    if (q.includes('proveedor') || q.includes('proveedores')) {
+      return '/api/v1/proveedores';
+    }
+
+    // Productos / Inventario
+    if (q.includes('producto') || q.includes('productos') || q.includes('inventario') || q.includes('stock')) {
+      return '/api/v1/productos';
+    }
+    if (q.includes('resumen de inventario') || q.includes('resumen inventario')) {
+      return '/api/v1/productos/resumen-inventario';
+    }
+
+    // Compras
+    if (q.includes('compra') || q.includes('compras')) {
+      return '/api/v1/compras';
+    }
+
+    // Gastos
+    if (q.includes('gasto') || q.includes('gastos')) {
+      return '/api/v1/gastos';
+    }
+    if (q.includes('categoría de gasto') || q.includes('categorias de gasto')) {
+      return '/api/v1/gastos/categorias';
+    }
+
+    // Asientos / Contabilidad general
+    if (q.includes('asiento') || q.includes('asientos')) {
+      return '/api/v1/contabilidad/asientos';
+    }
+
+    return null;
+  }
+
+  private formatResponse(endpoint: string, data: unknown): string {
+    if (!data) return 'No hay datos disponibles.';
+
+    try {
+      // Si es un array, formatear como lista
+      if (Array.isArray(data)) {
+        if (data.length === 0) return 'No hay registros.';
+        
+        // Limitar a 10 items para no saturar
+        const items = data.slice(0, 10);
+        const lines = items.map((item: any, i: number) => {
+          // Extraer campos principales según el tipo de endpoint
+          if (endpoint.includes('plan-cuentas')) {
+            return `${i + 1}. ${item.codigo || ''} ${item.nombre || ''} ${item.tipo ? `(${item.tipo})` : ''} ${item.saldo !== undefined ? `- Saldo: ${item.saldo}` : ''}`;
+          }
+          if (endpoint.includes('clientes') || endpoint.includes('proveedores')) {
+            return `${i + 1}. ${item.nombre || item.razonSocial || 'Sin nombre'} ${item.rif ? `- RIF: ${item.rif}` : ''} ${item.email ? `- ${item.email}` : ''}`;
+          }
+          if (endpoint.includes('productos')) {
+            return `${i + 1}. ${item.nombre || item.sku || 'Sin nombre'} ${item.precio ? `- ${item.precio}` : ''} ${item.stock !== undefined ? `- Stock: ${item.stock}` : ''}`;
+          }
+          if (endpoint.includes('cajas/cuentas')) {
+            return `${i + 1}. ${item.nombre || 'Sin nombre'} (${item.tipo || ''}) - Saldo: ${item.saldo !== undefined ? item.saldo : 'N/A'} ${item.moneda || ''}`;
+          }
+          if (endpoint.includes('compras') || endpoint.includes('gastos')) {
+            return `${i + 1}. ${item.numeroFactura || item.numeroComprobante || item.id?.slice(0,8)} - ${item.fecha || ''} - ${item.monto || item.total || ''} ${item.moneda || ''}`;
+          }
+          // Genérico: mostrar primer campo que parezca nombre
+          const name = item.nombre || item.razonSocial || item.titulo || item.descripcion || JSON.stringify(item).slice(0, 80);
+          return `${i + 1}. ${name}`;
+        });
+        
+        const more = data.length > 10 ? `\n... y ${data.length - 10} más` : '';
+        return lines.join('\n') + more;
+      }
+
+      // Si es objeto, formatear campos principales
+      if (typeof data === 'object' && data !== null) {
+        const obj = data as Record<string, unknown>;
+        const lines = Object.entries(obj)
+          .filter(([_, v]) => v !== null && v !== undefined && v !== '')
+          .slice(0, 15)
+          .map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`);
+        return lines.join('\n') || 'Datos recibidos (formato inesperado)';
+      }
+
+      return String(data);
+    } catch (err) {
+      this.logger.warn(`Error formateando respuesta: ${(err as Error).message}`);
+      return JSON.stringify(data).slice(0, 1000);
     }
   }
 

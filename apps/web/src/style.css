@@ -16,12 +16,12 @@ body {
 }
 
 .shell {
-  max-width: 720px;
+  max-width: 860px;
   margin: 0 auto;
   padding: 32px 20px 64px;
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 24px;
 }
 
 .header {
@@ -29,19 +29,21 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .header h1 {
   margin: 0;
-  font-size: 1.6rem;
+  font-size: 1.75rem;
 }
 
 .badge {
-  padding: 4px 12px;
+  padding: 6px 14px;
   border-radius: 999px;
   font-size: 0.85rem;
   font-weight: 600;
   border: 1px solid transparent;
+  white-space: nowrap;
 }
 
 .badge-connected {
@@ -70,7 +72,7 @@ body {
 
 .alert {
   margin: 0;
-  padding: 10px 14px;
+  padding: 12px 16px;
   border-radius: 8px;
   background: #3a1414;
   border: 1px solid #752020;
@@ -81,15 +83,15 @@ body {
   background: #171a21;
   border: 1px solid #262b36;
   border-radius: 12px;
-  padding: 20px;
+  padding: 24px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 18px;
 }
 
 .card h2 {
   margin: 0;
-  font-size: 1.05rem;
+  font-size: 1.1rem;
 }
 
 .card p {
@@ -105,25 +107,28 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 14px;
   text-align: center;
+  padding: 16px 0;
 }
 
 .qr img {
   background: #fff;
-  border-radius: 8px;
-  padding: 8px;
+  border-radius: 10px;
+  padding: 12px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.3);
 }
 
 button {
   align-self: flex-start;
-  padding: 9px 18px;
+  padding: 10px 20px;
   border-radius: 8px;
   border: 1px solid #2f6feb;
   background: #2f6feb;
   color: #fff;
   font-size: 0.95rem;
   cursor: pointer;
+  transition: filter 0.15s, background 0.15s;
 }
 
 button:disabled {
@@ -138,7 +143,7 @@ button:hover:not(:disabled) {
 .form {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 label {
@@ -150,7 +155,7 @@ label {
 }
 
 input {
-  padding: 9px 12px;
+  padding: 10px 14px;
   border-radius: 8px;
   border: 1px solid #2f3644;
   background: #0f1115;
@@ -171,7 +176,7 @@ input:focus {
   margin: 0;
   padding: 0;
   list-style: none;
-  max-height: 220px;
+  max-height: 260px;
   overflow-y: auto;
   font-family: ui-monospace, monospace;
   font-size: 0.82rem;
@@ -185,10 +190,12 @@ input:focus {
   display: flex;
   gap: 10px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .inline input {
   flex: 1;
+  min-width: 200px;
 }
 
 .numbers {
@@ -205,7 +212,7 @@ input:focus {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 12px;
+  padding: 10px 14px;
   border-radius: 8px;
   background: #0f1115;
   border: 1px solid #262b36;
@@ -229,11 +236,118 @@ input:focus {
   color: #8f98a8;
 }
 
+.hint.error {
+  color: #ff8080;
+}
+
 button.ghost {
   align-self: auto;
-  padding: 4px 12px;
+  padding: 6px 14px;
   font-size: 0.85rem;
   background: transparent;
   border-color: #752020;
   color: #ffb3b3;
+}
+
+button.ghost:hover:not(:disabled) {
+  background: #3a1414;
+}
+
+button.ghost.danger {
+  border-color: #752020;
+  color: #ff8080;
+}
+
+button.ghost.danger:hover:not(:disabled) {
+  background: #3a1414;
+}
+
+.session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.session-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border-radius: 10px;
+  background: #0f1115;
+  border: 1px solid #262b36;
+  color: #e6e8eb;
+  font-size: 0.95rem;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.session-item:hover {
+  border-color: #2f6feb;
+}
+
+.session-item.active {
+  border-color: #2f6feb;
+  background: #10243a;
+}
+
+.session-name {
+  font-weight: 500;
+}
+
+.session-item-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 18px;
+  border-radius: 10px;
+  background: #0f1115;
+  border: 1px solid #262b36;
+  flex-wrap: wrap;
+}
+
+.session-item-row > div[style*="flex: 1"] {
+  flex: 1;
+  min-width: 220px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.session-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.card-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.connecting-overlay {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+  color: #aab2c0;
+}
+
+.spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid #262b36;
+  border-top-color: #2f6feb;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }

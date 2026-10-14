@@ -1,11 +1,11 @@
 import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   Injectable,
   Logger,
   BadRequestException,
   ServiceUnavailableException,
   OnModuleDestroy,
-  OnModuleInit,
 } from '@nestjs/common';
 import QRCode from 'qrcode';
 import pino from 'pino';
@@ -44,8 +44,10 @@ export interface InboundMessage {
   chatType: 'direct' | 'group';
 }
 
+type OnConnectedCallback = (user: string) => Promise<void>;
+
 @Injectable()
-export class WhatsappService implements OnModuleInit, OnModuleDestroy {
+export class WhatsappService implements OnModuleDestroy {
   private readonly logger = new Logger(WhatsappService.name);
   private sock: WASocket | null = null;
   private baileys: BaileysModule | null = null;
@@ -56,20 +58,44 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   private generation = 0;
   private starting = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private empresaId = 'default';
+  private empresaNombre = 'Default';
+  private onConnectedCallback: OnConnectedCallback | null = null;
 
   constructor(
     private readonly assistant: AssistantService,
     private readonly allowlist: AllowlistService,
   ) {}
 
-  onModuleInit(): void {
-    if (!env.autoStart()) return;
-    void this.start().catch((err: Error) =>
-      this.logger.error(`No se pudo iniciar Baileys: ${err.message}`),
-    );
+  setOnConnected(callback: OnConnectedCallback): void {
+    this.onConnectedCallback = callback;
+  }
+
+  setEmpresaId(id: string): void {
+    this.empresaId = id;
+  }
+
+  setEmpresaNombre(nombre: string): void {
+    this.empresaNombre = nombre;
+  }
+
+  getEmpresaId(): string {
+    return this.empresaId;
+  }
+
+  getEmpresaNombre(): string {
+    return this.empresaNombre;
+  }
+
+  private sessionPath(): string {
+    return join(env.sessionBase(), this.empresaId, 'auth');
   }
 
   onModuleDestroy(): void {
+    this.destroy();
+  }
+
+  destroy(): void {
     this.clearReconnectTimer();
     this.generation += 1;
     const sock = this.sock;
@@ -118,10 +144,9 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       if (generation !== this.generation) return this.getStatus(true);
       this.baileys = mod;
 
-      await mkdir(env.sessionPath(), { recursive: true });
-      const { state, saveCreds } = await mod.useMultiFileAuthState(
-        env.sessionPath(),
-      );
+      const sessionPath = this.sessionPath();
+      await mkdir(sessionPath, { recursive: true });
+      const { state, saveCreds } = await mod.useMultiFileAuthState(sessionPath);
       const makeSocket = mod.default ?? mod.makeWASocket;
 
       let version: import('@whiskeysockets/baileys').WAVersion | undefined;
@@ -157,7 +182,9 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         if (generation === this.generation) void this.onMessages(messages);
       });
 
-      this.logger.log(`Sesión cargada desde ${env.sessionPath()}`);
+      this.logger.log(
+        `Sesión cargada para ${this.empresaNombre} (${this.empresaId}) desde ${sessionPath}`,
+      );
       return this.getStatus(true);
     } finally {
       this.starting = false;
@@ -166,11 +193,13 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
   async send(to: string, text: string): Promise<{ ok: true; to: string }> {
     if (this.state !== 'connected' || !this.sock) {
-      throw new ServiceUnavailableException('WhatsApp no está conectado');
+      throw new ServiceUnavailableException(
+        `WhatsApp no está conectado para ${this.empresaNombre}`,
+      );
     }
     const jid = toJid(to);
     await this.sock.sendMessage(jid, { text });
-    this.logger.log(`Mensaje enviado a ${jid}`);
+    this.logger.log(`Mensaje enviado a ${jid} (${this.empresaNombre})`);
     return { ok: true, to: jid };
   }
 
@@ -184,11 +213,11 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         this.qrDataUrl = await QRCode.toDataURL(qr);
         this.state = 'waiting_for_qr';
         this.logger.log(
-          'QR listo: escanear desde WhatsApp > Dispositivos vinculados',
+          `QR listo para ${this.empresaNombre}: escanear desde WhatsApp > Dispositivos vinculados`,
         );
       } catch (err) {
         this.logger.error(
-          `No se pudo generar el QR: ${(err as Error).message}`,
+          `No se pudo generar el QR para ${this.empresaNombre}: ${(err as Error).message}`,
         );
       }
     }
@@ -199,7 +228,16 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       const jid = this.sock?.user?.id ?? null;
       this.user = jid ? jid.split(':')[0] : null;
       this.qrDataUrl = null;
-      this.logger.log(`Conectado como ${this.user ?? 'desconocido'}`);
+      this.logger.log(
+        `${this.empresaNombre} conectado como ${this.user ?? 'desconocido'}`,
+      );
+      if (this.user && this.onConnectedCallback) {
+        try {
+          await this.onConnectedCallback(this.user);
+        } catch (err) {
+          this.logger.error(`Error en callback onConnected: ${(err as Error).message}`);
+        }
+      }
     }
 
     if (connection === 'close') {
@@ -215,8 +253,10 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         this.user = null;
         this.qrDataUrl = null;
         this.logger.warn(
-          'Sesión cerrada por WhatsApp. Usa reconectar para generar un QR nuevo.',
+          `Sesión de ${this.empresaNombre} cerrada por WhatsApp. Limpiando sesión expirada...`,
         );
+        // Limpiar automáticamente la carpeta de auth expirada
+        await this.clearAuthFolder();
         return;
       }
 
@@ -231,7 +271,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     if (this.attempts > max) {
       this.state = 'disconnected';
       this.logger.error(
-        `Máximo de reintentos alcanzado (${max}). Usa reconectar.`,
+        `${this.empresaNombre}: máximo de reintentos alcanzado (${max}). Usa reconectar.`,
       );
       return;
     }
@@ -239,7 +279,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     const delay = Math.min(30_000, 1000 * 2 ** Math.min(this.attempts, 5));
     this.state = 'connecting';
     this.logger.warn(
-      `Conexión cerrada (${statusCode ?? 'n/d'}), reintento ${this.attempts}/${max} en ${delay}ms`,
+      `${this.empresaNombre}: conexión cerrada (${statusCode ?? 'n/d'}), reintento ${this.attempts}/${max} en ${delay}ms`,
     );
     this.reconnectTimer = setTimeout(() => void this.start(), delay);
   }
@@ -269,7 +309,9 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async onMessages(messages: WAMessage[]): Promise<void> {
-    this.logger.log(`messages.upsert: ${messages.length} mensaje(s)`);
+    this.logger.log(
+      `${this.empresaNombre}: messages.upsert: ${messages.length} mensaje(s)`,
+    );
     for (const msg of messages) {
       const jid = msg.key.remoteJid ?? '';
       const body =
@@ -308,7 +350,7 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async handleInbound(payload: InboundMessage): Promise<void> {
-    const allowed = this.allowlist.allowed();
+    const allowed = this.allowlist.allowed(this.empresaId);
     const decision = decideAccess({
       chatType: payload.chatType,
       fromNumber: payload.fromNumber,
@@ -320,11 +362,13 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
         payload.chatType === 'group' && !env.allowGroups()
           ? 'grupo'
           : 'no autorizado';
-      this.logger.log(`Mensaje de ${payload.fromNumber} ignorado (${reason})`);
+      this.logger.log(
+        `${this.empresaNombre}: mensaje de ${payload.fromNumber} ignorado (${reason})`,
+      );
       return;
     }
 
-    if (this.assistant.enabled) {
+    if (this.assistant?.enabled) {
       const reply = await this.assistant.reply(payload);
       if (reply) {
         await this.sendReply(payload.from, reply);
@@ -336,15 +380,17 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
 
   private async sendReply(jid: string, text: string): Promise<void> {
     if (this.state !== 'connected' || !this.sock) {
-      this.logger.warn('No se pudo responder: WhatsApp no está conectado');
+      this.logger.warn(
+        `${this.empresaNombre}: no se pudo responder: WhatsApp no está conectado`,
+      );
       return;
     }
     try {
       await this.sock.sendMessage(jid, { text });
-      this.logger.log(`Respuesta enviada a ${jid}`);
+      this.logger.log(`${this.empresaNombre}: respuesta enviada a ${jid}`);
     } catch (err) {
       this.logger.warn(
-        `No se pudo enviar la respuesta a ${jid}: ${(err as Error).message}`,
+        `${this.empresaNombre}: no se pudo enviar la respuesta a ${jid}: ${(err as Error).message}`,
       );
     }
   }
@@ -364,14 +410,20 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
       const res = await fetch(url, {
         method: 'POST',
         headers,
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          ...payload,
+          empresaId: this.empresaId,
+          empresaNombre: this.empresaNombre,
+        }),
       });
       if (!res.ok) {
-        this.logger.warn(`Inbound reenviado con HTTP ${res.status}`);
+        this.logger.warn(
+          `${this.empresaNombre}: inbound reenviado con HTTP ${res.status}`,
+        );
       }
     } catch (err) {
       this.logger.warn(
-        `No se pudo reenviar inbound a backend 1: ${(err as Error).message}`,
+        `${this.empresaNombre}: no se pudo reenviar inbound a backend 1: ${(err as Error).message}`,
       );
     }
   }
@@ -380,6 +432,17 @@ export class WhatsappService implements OnModuleInit, OnModuleDestroy {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+  }
+
+  private async clearAuthFolder(): Promise<void> {
+    try {
+      const { rm } = await import('node:fs/promises');
+      const sessionPath = this.sessionPath();
+      await rm(sessionPath, { recursive: true, force: true });
+      this.logger.log(`Carpeta de auth eliminada para ${this.empresaNombre}: ${sessionPath}`);
+    } catch (err) {
+      this.logger.warn(`No se pudo eliminar carpeta de auth: ${(err as Error).message}`);
     }
   }
 }

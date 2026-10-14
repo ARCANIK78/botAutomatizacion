@@ -9,38 +9,66 @@ export interface AllowlistEntry {
 
 @Injectable()
 export class AllowlistService {
-  private readonly runtime = new Set<string>();
+  // runtime[empresaId] = Set<números>
+  private readonly runtime = new Map<string, Set<string>>();
 
-  allowed(): string[] {
-    return [...new Set([...this.envNumbers(), ...this.runtime])];
+  allowed(empresaId?: string): string[] {
+    const envNumbers = this.envNumbers();
+    if (!empresaId) {
+      // Global: todas las empresas
+      const all = new Set(envNumbers);
+      for (const numbers of this.runtime.values()) {
+        for (const n of numbers) all.add(n);
+      }
+      return [...all];
+    }
+    const company = this.runtime.get(empresaId) ?? new Set<string>();
+    return [...new Set([...envNumbers, ...company])];
   }
 
-  list(): AllowlistEntry[] {
+  list(empresaId?: string): AllowlistEntry[] {
     const envNumbers = this.envNumbers();
     const entries: AllowlistEntry[] = envNumbers.map((number) => ({
       number,
       source: 'env',
     }));
-    for (const number of this.runtime) {
-      if (!envNumbers.includes(number)) {
-        entries.push({ number, source: 'runtime' });
+
+    if (empresaId) {
+      const company = this.runtime.get(empresaId) ?? new Set<string>();
+      for (const number of company) {
+        if (!envNumbers.includes(number)) {
+          entries.push({ number, source: 'runtime' });
+        }
+      }
+    } else {
+      // Global: listar todos los runtime de todas las empresas
+      for (const [eid, numbers] of this.runtime) {
+        for (const number of numbers) {
+          if (!envNumbers.includes(number)) {
+            entries.push({ number, source: 'runtime' });
+          }
+        }
       }
     }
     return entries;
   }
 
-  add(raw: string): AllowlistEntry[] {
+  add(raw: string, empresaId?: string): AllowlistEntry[] {
     const number = normalizeBolivianPhone(raw ?? '');
     if (!number) {
       throw new BadRequestException(
         'Ingresa un número boliviano válido (ej. 72830478 o +591 72830478)',
       );
     }
-    this.runtime.add(number);
-    return this.list();
+    const key = empresaId ?? 'global';
+    if (!this.runtime.has(key)) {
+      this.runtime.set(key, new Set());
+    }
+    this.runtime.get(key)!.add(number);
+    return this.list(empresaId);
   }
 
-  remove(raw: string): AllowlistEntry[] {
+  remove(raw: string, empresaId?: string): AllowlistEntry[] {
     const number =
       normalizeBolivianPhone(raw ?? '') ?? normalizePhone(raw ?? '');
     if (this.envNumbers().includes(number)) {
@@ -48,8 +76,15 @@ export class AllowlistService {
         'Ese número está definido en WHATSAPP_ALLOWED_NUMBERS y no se puede quitar desde el panel',
       );
     }
-    this.runtime.delete(number);
-    return this.list();
+    const key = empresaId ?? 'global';
+    const company = this.runtime.get(key);
+    if (company) {
+      company.delete(number);
+      if (company.size === 0) {
+        this.runtime.delete(key);
+      }
+    }
+    return this.list(empresaId);
   }
 
   private envNumbers(): string[] {

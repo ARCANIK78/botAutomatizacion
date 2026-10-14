@@ -7,69 +7,107 @@ import {
   NotFoundException,
   Param,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { isAdminRequest, AdminGuard } from '../common/auth';
 import { AssistantService } from '../assistant/assistant.service';
 import { AllowlistService } from './allowlist.service';
-import { WhatsappService } from './whatsapp.service';
+import { SessionManagerService } from './session-manager.service';
 
 @Controller('api/whatsapp')
 export class WhatsappController {
   constructor(
-    private readonly whatsapp: WhatsappService,
+    private readonly sessionManager: SessionManagerService,
     private readonly allowlist: AllowlistService,
     private readonly assistant: AssistantService,
   ) {}
+
+  @Get('empresas')
+  @UseGuards(AdminGuard)
+  listSessions() {
+    return { sessions: this.sessionManager.list() };
+  }
 
   @Get('status')
   status(
     @Headers('x-admin-token') xAdminToken?: string,
     @Headers('authorization') authorization?: string,
+    @Query('empresaId') empresaId?: string,
   ) {
     const authorized = isAdminRequest(xAdminToken, authorization);
-    return this.whatsapp.getStatus(authorized);
+    const id = empresaId ?? 'default';
+    const session = this.sessionManager.get(id);
+    if (!session) {
+      return { state: 'disconnected', qr: null, user: null, at: Date.now() };
+    }
+    return session.getStatus(authorized);
   }
 
   @Get('qr')
   @UseGuards(AdminGuard)
-  qr() {
-    const status = this.whatsapp.getStatus(true);
+  qr(@Query('empresaId') empresaId?: string) {
+    const id = empresaId ?? 'default';
+    const session = this.sessionManager.get(id);
+    if (!session) throw new NotFoundException(`Empresa ${id} no encontrada`);
+    const status = session.getStatus(true);
     if (!status.qr) throw new NotFoundException('No hay un QR disponible');
-    return { qr: status.qr, state: status.state };
+    return { qr: status.qr, state: status.state, empresaId: id };
   }
 
   @Post('connect')
   @UseGuards(AdminGuard)
-  connect() {
-    return this.whatsapp.start();
+  async connect(@Body() body: { empresaId?: string; empresaNombre?: string }) {
+    const id = body.empresaId ?? 'default';
+    const nombre = body.empresaNombre ?? id;
+    await this.sessionManager.startSession(id, nombre);
+    const session = this.sessionManager.get(id);
+    return session!.getStatus(true);
   }
 
   @Post('send')
   @UseGuards(AdminGuard)
-  send(@Body() body: { to?: string; message?: string }) {
-    return this.whatsapp.send(
-      String(body?.to ?? ''),
-      String(body?.message ?? ''),
-    );
+  async send(
+    @Body() body: { empresaId?: string; to?: string; message?: string },
+  ) {
+    const id = body.empresaId ?? 'default';
+    const session = this.sessionManager.get(id);
+    if (!session) throw new NotFoundException(`Empresa ${id} no encontrada`);
+    return session.send(String(body?.to ?? ''), String(body?.message ?? ''));
   }
 
   @Get('allowed')
   @UseGuards(AdminGuard)
-  listAllowed() {
-    return { numbers: this.allowlist.list() };
+  listAllowed(@Query('empresaId') empresaId?: string) {
+    return { numbers: this.allowlist.list(empresaId) };
   }
 
   @Post('allowed')
   @UseGuards(AdminGuard)
-  addAllowed(@Body() body: { number?: string }) {
-    return { numbers: this.allowlist.add(String(body?.number ?? '')) };
+  addAllowed(@Body() body: { number?: string; empresaId?: string }) {
+    return {
+      numbers: this.allowlist.add(
+        String(body?.number ?? ''),
+        body.empresaId,
+      ),
+    };
   }
 
   @Delete('allowed/:number')
   @UseGuards(AdminGuard)
-  removeAllowed(@Param('number') number: string) {
-    return { numbers: this.allowlist.remove(number) };
+  removeAllowed(
+    @Param('number') number: string,
+    @Query('empresaId') empresaId?: string,
+  ) {
+    return { numbers: this.allowlist.remove(number, empresaId) };
+  }
+
+  @Delete('session/:empresaId')
+  @UseGuards(AdminGuard)
+  removeSession(@Param('empresaId') empresaId: string) {
+    const removed = this.sessionManager.remove(empresaId);
+    if (!removed) throw new NotFoundException(`Empresa ${empresaId} no encontrada`);
+    return { ok: true };
   }
 
   @Post('test-llm')

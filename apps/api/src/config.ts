@@ -36,10 +36,14 @@ export const env = {
     return Number(process.env.PORT ?? 3000);
   },
 
-  sessionPath(): string {
+  sessionBase(): string {
     return (
-      process.env.WHATSAPP_SESSION_PATH ?? join(process.cwd(), 'data', 'auth')
+      process.env.WHATSAPP_SESSION_PATH ?? join(process.cwd(), 'data', 'sessions')
     );
+  },
+
+  empresasBackendUrl(): string {
+    return process.env.EMPRESAS_BACKEND_URL ?? '';
   },
 
   sharedToken(): string {
