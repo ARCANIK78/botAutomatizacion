@@ -13,25 +13,121 @@ export interface AssistantInbound {
   empresaId?: string;
 }
 
-const CONSULT_TOOL: LlmTool = {
-  type: 'function',
-  function: {
-    name: 'consult_backend',
-    description:
-      'Consulta en el sistema contable (backend 1) los datos del usuario cuando la pregunta requiere información real: saldos, facturas, pagos, movimientos, clientes, etc. Devuelve la información para que redactes la respuesta final.',
-    parameters: {
-      type: 'object',
-      properties: {
-        query: {
-          type: 'string',
-          description:
-            'La consulta a realizar sobre los datos del usuario, redactada de forma clara en español.',
-        },
-      },
-      required: ['query'],
-    },
+/**
+ * Rutas disponibles en el sistema contable, en el orden en que se le
+ * presentan al LLM. Cada una describe qué contiene, de modo que el modelo
+ * elija según lo que pide el usuario y no según coincidencias de palabras.
+ *
+ * Antes el endpoint lo decidía detectEndpoint() con includes() sobre el
+ * texto del usuario. Un saludo como "Activos" o "Inventarios" no menciona
+ * ningún endpoint, así que todo caía en el plan de cuentas completo y el
+ * asistente respondía igual a cualquier pregunta.
+ */
+interface RutaContable {
+  id: string;
+  ruta: string;
+  descripcion: string;
+}
+
+const RUTAS_CONTABLES: RutaContable[] = [
+  {
+    id: 'plan-cuentas-arbol',
+    ruta: '/api/v1/contabilidad/plan-cuentas/arbol',
+    descripcion:
+      'Plan de cuentas completo con su jerarquía real de subcuentas. Úsala para cualquier pregunta sobre el plan, las cuentas contables o una sección o cuenta concreta. Es la opción por defecto.',
   },
-};
+  {
+    id: 'plan-cuentas-con-saldos',
+    ruta: '/api/v1/contabilidad/plan-cuentas/con-saldos',
+    descripcion:
+      'Plan de cuentas con el saldo de cada cuenta (debe, haber, saldo deudor y acreedor). Úsala para preguntas por saldos de cuentas contables.',
+  },
+  {
+    id: 'balance-comprobacion',
+    ruta: '/api/v1/contabilidad/balance-comprobacion',
+    descripcion: 'Balance de comprobación.',
+  },
+  {
+    id: 'balance-general',
+    ruta: '/api/v1/contabilidad/balance-general',
+    descripcion: 'Balance general o estado de situación financiera.',
+  },
+  {
+    id: 'estado-resultados',
+    ruta: '/api/v1/contabilidad/estado-resultados',
+    descripcion:
+      'Estado de resultados, ingresos y gastos del periodo.',
+  },
+  {
+    id: 'asientos',
+    ruta: '/api/v1/contabilidad/asientos',
+    descripcion: 'Asientos contables registrados.',
+  },
+  {
+    id: 'cajas',
+    ruta: '/api/v1/cajas/cuentas',
+    descripcion:
+      'Cuentas de caja y bancos con su saldo disponible. Úsala para preguntas por efectivo, caja, bancos o cuánto dinero hay disponible.',
+  },
+  {
+    id: 'proveedores',
+    ruta: '/api/v1/proveedores',
+    descripcion: 'Proveedores registrados.',
+  },
+  {
+    id: 'productos',
+    ruta: '/api/v1/productos',
+    descripcion:
+      'Productos e inventario con precios y stock. Úsala para preguntas por productos o inventario.',
+  },
+  {
+    id: 'resumen-inventario',
+    ruta: '/api/v1/productos/resumen-inventario',
+    descripcion: 'Resumen del inventario.',
+  },
+  {
+    id: 'compras',
+    ruta: '/api/v1/compras',
+    descripcion: 'Compras realizadas.',
+  },
+  {
+    id: 'gastos',
+    ruta: '/api/v1/gastos',
+    descripcion: 'Gastos registrados.',
+  },
+];
+
+function buildConsultTool(): LlmTool {
+  const propiedades: Record<string, unknown> = {
+    query: {
+      type: 'string',
+      description:
+        'Consulta a realizar sobre los datos del usuario, redactada de forma clara en español.',
+    },
+  };
+  for (const ruta of RUTAS_CONTABLES) {
+    propiedades[ruta.id] = {
+      type: 'string',
+      description: `${ruta.descripcion} Deja vacío si no la usas.`,
+    };
+  }
+
+  return {
+    type: 'function',
+    function: {
+      name: 'consult_backend',
+      description:
+        'Consulta el sistema contable y devuelve los datos del usuario. Elige la opción que corresponda a lo que pide y rellénala con la consulta del usuario. Solo rellena una.',
+      parameters: {
+        type: 'object',
+        properties: propiedades,
+        required: ['query'],
+      },
+    },
+  };
+}
+
+const CONSULT_TOOL = buildConsultTool();
 
 interface HistoryEntry {
   messages: LlmMessage[];
@@ -122,8 +218,11 @@ export class AssistantService implements OnModuleDestroy {
 
       const toolResults: LlmMessage[] = [];
       for (const call of consultCalls) {
-        const query = this.parseQuery(call.arguments, payload.body);
-        const data = await this.consultBackend(query, payload);
+        const { query, ruta } = this.parseToolCall(
+          call.arguments,
+          payload.body,
+        );
+        const data = await this.consultBackend(query, ruta, payload);
         toolResults.push({
           role: 'tool',
           tool_call_id: call.id,
@@ -146,26 +245,47 @@ export class AssistantService implements OnModuleDestroy {
     return finalReply;
   }
 
-  private parseQuery(rawArguments: string, fallback: string): string {
+  /**
+   * Lee los argumentos de la llamada y decide qué endpoint consultar.
+   *
+   * El LLM marca la opción que corresponde con la consulta del usuario. Si
+   * no marca ninguna se usa el árbol de cuentas, que es la ruta por defecto
+   * y cubre la mayoría de las preguntas sobre el plan.
+   */
+  private parseToolCall(
+    rawArguments: string,
+    fallback: string,
+  ): { query: string; ruta: RutaContable } {
+    const porDefecto = RUTAS_CONTABLES[0];
+    let parsed: Record<string, unknown> = {};
     try {
-      const parsed = JSON.parse(rawArguments) as { query?: unknown };
-      if (typeof parsed.query === 'string' && parsed.query.trim()) {
-        return parsed.query.trim();
-      }
+      parsed = JSON.parse(rawArguments) as Record<string, unknown>;
     } catch {
-      /* argumentos no-JSON: se usa el texto del usuario */
+      /* argumentos no-JSON: se usa la ruta por defecto */
     }
-    return fallback;
+
+    const query =
+      typeof parsed.query === 'string' && parsed.query.trim()
+        ? parsed.query.trim()
+        : fallback;
+
+    const elegida = RUTAS_CONTABLES.find((ruta) => {
+      const valor = parsed[ruta.id];
+      return typeof valor === 'string' && valor.trim().length > 0;
+    });
+
+    return { query, ruta: elegida ?? porDefecto };
   }
 
   private async consultBackend(
     query: string,
+    ruta: RutaContable,
     payload: AssistantInbound,
   ): Promise<string> {
     const base = this.backend1.baseUrl;
     if (!base) {
       this.logger.warn(
-        'BACKEND1_BASE_URL sin configurar: no se puede consultar el sistema contable',
+        'Sin URL del sistema contable: no se puede consultar (BACKEND1_BASE_URL y EMPRESAS_BACKEND_URL sin definir)',
       );
       return env.dataUnavailableReply();
     }
@@ -173,19 +293,13 @@ export class AssistantService implements OnModuleDestroy {
     this.logger.log(`Base Backend 1: ${base}`);
 
     try {
-      // Detectar qué endpoint consultar según la query
-      const endpoint = this.detectEndpoint(query);
-      if (!endpoint) {
-        return 'No sé cómo consultar esa información. Pregunta por: plan de cuentas, clientes, productos, saldo, compras, gastos, proveedores, balance, etc.';
-      }
-
       // Activar la empresa antes de consultar
       if (payload.empresaId) {
         await this.activateEmpresa(payload.empresaId);
       }
 
-      const url = `${base.replace(/\/+$/, '')}${endpoint}`;
-      this.logger.log(`Consultando ${endpoint} para query: ${query}`);
+      const url = `${base.replace(/\/+$/, '')}${ruta.ruta}`;
+      this.logger.log(`Consultando ${ruta.id} para query: ${query}`);
 
       // fetchWithAuth renueva el token y reintenta una vez si Backend 1 responde 401
       const res = await this.backend1.fetchWithAuth(url, {
@@ -193,16 +307,16 @@ export class AssistantService implements OnModuleDestroy {
         signal: AbortSignal.timeout(env.backend1ReplyTimeoutMs()),
       });
 
-      this.logger.log(`Response status: ${res.status} for ${endpoint}`);
+      this.logger.log(`Response status: ${res.status} for ${ruta.id}`);
 
       if (!res.ok) {
         const errorText = await res.text().catch(() => '');
-        this.logger.warn(`Backend 1 (${endpoint}) respondió HTTP ${res.status}: ${errorText.slice(0, 200)}`);
+        this.logger.warn(`Backend 1 (${ruta.id}) respondió HTTP ${res.status}: ${errorText.slice(0, 200)}`);
         return `El sistema de datos respondió HTTP ${res.status}. No fue posible obtener la información.`;
       }
 
       const data = await res.json();
-      return this.formatResponse(endpoint, data);
+      return this.formatResponse(ruta.ruta, data);
     } catch (err) {
       this.logger.warn(
         `No se pudo consultar a backend 1: ${(err as Error).message}`,
@@ -233,76 +347,39 @@ export class AssistantService implements OnModuleDestroy {
     }
   }
 
-  private detectEndpoint(query: string): string | null {
-    const q = query.toLowerCase();
+  /**
+   * Máximo de registros que el asistente puede ver de una sola consulta.
+   *
+   * 150 filas planas son ~2-3k caracteres, que caben en el contexto sin
+   * desplazar la conversación. Más allá de eso el prompt crece y el LLM
+   * empieza a ignorar instrucciones. El límite anterior era 10, lo que
+   * dejaba 39 de 49 cuentas fuera de la vista: el asistente no podía
+   * buscarlas ni filtrarlas y respondía siempre con las mismas 10.
+   */
+  private static readonly MAX_FILAS = 150;
 
-    // Plan de cuentas
-    if (q.includes('plan de cuentas') || q.includes('cuentas contables') || q.includes('plan contable')) {
-      return '/api/v1/contabilidad/plan-cuentas';
+  /**
+   * Aplana el árbol de cuentas respetando la jerarquía real que devolvió el
+   * backend. La opción plan-cuentas es una lista plana cuyo padre está como
+   * cuentaPadreId (un UUID), así que el LLM no puede reconstruirla y acaba
+   * inventando la estructura. Acá la jerarquía viene resuelta.
+   */
+  private static aplanarArbol(nodos: any[], nivel = 0): string[] {
+    const lineas: string[] = [];
+    const sangria = '  '.repeat(nivel);
+    for (const nodo of nodos) {
+      if (!nodo || typeof nodo !== 'object') continue;
+      const saldo =
+        typeof nodo.neto === 'number' && nodo.neto !== 0
+          ? ` (neto: ${nodo.neto})`
+          : '';
+      lineas.push(`${sangria}${nodo.codigo ?? ''} ${nodo.nombre ?? ''}${saldo}`);
+      const hijos = Array.isArray(nodo.subCuentas) ? nodo.subCuentas : [];
+      if (hijos.length > 0) {
+        lineas.push(...AssistantService.aplanarArbol(hijos, nivel + 1));
+      }
     }
-    if (q.includes('árbol de cuentas') || q.includes('arbol de cuentas')) {
-      return '/api/v1/contabilidad/plan-cuentas/arbol';
-    }
-    if (q.includes('cuentas con saldo') || q.includes('saldos de cuentas')) {
-      return '/api/v1/contabilidad/plan-cuentas/con-saldos';
-    }
-
-    // Balance / Estados financieros
-    if (q.includes('balance de comprobación') || q.includes('balance comprobacion')) {
-      return '/api/v1/contabilidad/balance-comprobacion';
-    }
-    if (q.includes('balance general') || q.includes('balance general')) {
-      return '/api/v1/contabilidad/balance-general';
-    }
-    if (q.includes('estado de resultados') || q.includes('estado resultados') || q.includes('pérdidas y ganancias')) {
-      return '/api/v1/contabilidad/estado-resultados';
-    }
-    if (q.includes('libro mayor')) {
-      return '/api/v1/contabilidad/libro-mayor';
-    }
-
-    // Cajas / Saldos
-    if (q.includes('saldo') || q.includes('caja') || q.includes('banco') || q.includes('cuentas financieras')) {
-      return '/api/v1/cajas/cuentas';
-    }
-
-    // Clientes
-    if (q.includes('cliente') || q.includes('clientes')) {
-      return '/api/v1/clientes';
-    }
-
-    // Proveedores
-    if (q.includes('proveedor') || q.includes('proveedores')) {
-      return '/api/v1/proveedores';
-    }
-
-    // Productos / Inventario
-    if (q.includes('producto') || q.includes('productos') || q.includes('inventario') || q.includes('stock')) {
-      return '/api/v1/productos';
-    }
-    if (q.includes('resumen de inventario') || q.includes('resumen inventario')) {
-      return '/api/v1/productos/resumen-inventario';
-    }
-
-    // Compras
-    if (q.includes('compra') || q.includes('compras')) {
-      return '/api/v1/compras';
-    }
-
-    // Gastos
-    if (q.includes('gasto') || q.includes('gastos')) {
-      return '/api/v1/gastos';
-    }
-    if (q.includes('categoría de gasto') || q.includes('categorias de gasto')) {
-      return '/api/v1/gastos/categorias';
-    }
-
-    // Asientos / Contabilidad general
-    if (q.includes('asiento') || q.includes('asientos')) {
-      return '/api/v1/contabilidad/asientos';
-    }
-
-    return null;
+    return lineas;
   }
 
   private formatResponse(endpoint: string, data: unknown): string {
@@ -312,9 +389,17 @@ export class AssistantService implements OnModuleDestroy {
       // Si es un array, formatear como lista
       if (Array.isArray(data)) {
         if (data.length === 0) return 'No hay registros.';
-        
-        // Limitar a 10 items para no saturar
-        const items = data.slice(0, 10);
+
+        // El árbol viene anidado: se aplana antes de pasárselo al LLM
+        const esArbol = endpoint.includes('plan-cuentas/arbol');
+        if (esArbol) {
+          const lineas = AssistantService.aplanarArbol(data);
+          return lineas.length > 0
+            ? lineas.join('\n')
+            : 'El plan de cuentas no tiene cuentas registradas.';
+        }
+
+        const items = data.slice(0, AssistantService.MAX_FILAS);
         const lines = items.map((item: any, i: number) => {
           // Extraer campos principales según el tipo de endpoint
           if (endpoint.includes('plan-cuentas')) {
@@ -330,20 +415,59 @@ export class AssistantService implements OnModuleDestroy {
             return `${i + 1}. ${item.nombre || 'Sin nombre'} (${item.tipo || ''}) - Saldo: ${item.saldo !== undefined ? item.saldo : 'N/A'} ${item.moneda || ''}`;
           }
           if (endpoint.includes('compras') || endpoint.includes('gastos')) {
-            return `${i + 1}. ${item.numeroFactura || item.numeroComprobante || item.id?.slice(0,8)} - ${item.fecha || ''} - ${item.monto || item.total || ''} ${item.moneda || ''}`;
+            // gastos no trae numeroFactura: se usa la descripción como etiqueta
+            const etiqueta =
+              item.numeroFactura ||
+              item.descripcion ||
+              item.numeroComprobante ||
+              item.categoria?.nombre ||
+              (item.id ? String(item.id).slice(0, 8) : 'sin comprobante');
+            const monto = item.total ?? item.monto ?? item.montoEnMonedaBase;
+            return `${i + 1}. ${etiqueta} - ${item.fecha || ''} - ${monto ?? ''} ${item.moneda || ''}`.trim();
           }
           // Genérico: mostrar primer campo que parezca nombre
           const name = item.nombre || item.razonSocial || item.titulo || item.descripcion || JSON.stringify(item).slice(0, 80);
           return `${i + 1}. ${name}`;
         });
-        
-        const more = data.length > 10 ? `\n... y ${data.length - 10} más` : '';
+
+        const quedan = data.length - items.length;
+        // Si quedaron registros fuera, se dice cuántos y cómo verlos. Decir
+        // "... y 39 más" sin más instrucciones dejaba al LLM sin poder
+        // responder a preguntas sobre esos 39.
+        const more =
+          quedan > 0
+            ? `\n\n(Se muestran ${items.length} de ${data.length} registros. Hay ${quedan} más. Si el usuario pregunta por algo que no está aquí, vuelve a consultar indicando esa sección o palabra clave.)`
+            : '';
         return lines.join('\n') + more;
       }
 
       // Si es objeto, formatear campos principales
       if (typeof data === 'object' && data !== null) {
         const obj = data as Record<string, unknown>;
+
+        // El balance de comprobación trae las cuentas anidadas: volcar el
+        // objeto entero sería JSON crudo con 23 cuentas dentro.
+        if (Array.isArray(obj.cuentas) && obj.cuentas.length > 0) {
+          const t = (obj.totales ?? {}) as Record<string, unknown>;
+          const encabezado =
+            typeof t.debe === 'number' || typeof t.haber === 'number'
+              ? `Totales: debe ${t.debe ?? 0} · haber ${t.haber ?? 0}`
+              : '';
+          const filas = (obj.cuentas as any[])
+            .slice(0, AssistantService.MAX_FILAS)
+            .map(
+              (c: any, i: number) =>
+                `${i + 1}. ${c.codigo ?? ''} ${c.nombre ?? ''} - debe ${c.debe ?? 0} / haber ${c.haber ?? 0}`,
+            );
+          const cuadra =
+            typeof obj.cuadra === 'boolean'
+              ? `\n\nEl balance ${obj.cuadra ? 'cuadra' : 'NO cuadra'}.`
+              : '';
+          return [encabezado, ...filas, cuadra]
+            .filter(Boolean)
+            .join('\n');
+        }
+
         const lines = Object.entries(obj)
           .filter(([_, v]) => v !== null && v !== undefined && v !== '')
           .slice(0, 15)
