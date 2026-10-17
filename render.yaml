@@ -1,0 +1,93 @@
+services:
+  # Web Service principal (API + Frontend + WhatsApp Bot)
+  - type: web
+    name: bot-automatizacion
+    runtime: node
+    plan: starter
+    region: oregon
+    buildCommand: npm run build
+    startCommand: npm run start:prod
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "10000"
+      - key: NODE_VERSION
+        value: "20"
+      - key: WHATSAPP_SESSION_PATH
+        value: /data/sessions
+      - key: EMPRESAS_BACKEND_URL
+        value: https://contabily-xcw1.onrender.com
+      - key: BACKEND1_SHARED_TOKEN
+        sync: false
+      - key: BACKEND1_INBOUND_PATH
+        value: /webhooks/whatsapp-inbound
+      - key: LLM_ENABLED
+        value: "true"
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: LLM_MODEL
+        value: qwen/qwen3.8-27b
+      - key: LLM_TIMEOUT_MS
+        value: "30000"
+      - key: LLM_MAX_TOKENS
+        value: "800"
+      - key: LLM_TEMPERATURE
+        value: "0.3"
+      - key: BACKEND1_REPLY_TIMEOUT_MS
+        value: "10000"
+      - key: FALLBACK_REPLY
+        value: "No pude procesar tu consulta en este momento. Intenta de nuevo en unos minutos."
+      - key: CHAT_HISTORY_SIZE
+        value: "6"
+      - key: CHAT_HISTORY_TTL_MS
+        value: "1800000"
+      - key: BACKEND2_ADMIN_TOKEN
+        sync: false
+      - key: WA_MAX_RECONNECT
+        value: "8"
+      - key: WHATSAPP_ALLOWED_NUMBERS
+        value: ""
+      - key: WHATSAPP_ALLOW_GROUPS
+        value: "false"
+      - key: WA_AUTOSTART
+        value: "true"
+      # Variables para renovación automática de token (on-demand)
+      - key: CONTABILY_EMAIL
+        sync: false
+      - key: CONTABILY_PASSWORD
+        sync: false
+      - key: RENDER_API_KEY
+        sync: false
+      - key: RENDER_SERVICE_ID
+        sync: false
+
+    # Disco persistente para sesiones de WhatsApp
+    disk:
+      name: whatsapp-sessions
+      mountPath: /data
+      sizeGB: 1
+
+  # Cron Job para renovación proactiva de token (opcional - cada 12h)
+  - type: cron
+    name: refresh-contabily-token
+    runtime: node
+    plan: free
+    schedule: "0 */12 * * *"
+    buildCommand: npm install
+    startCommand: npx ts-node scripts/refresh-token.ts
+    envVars:
+      - key: EMPRESAS_BACKEND_URL
+        value: https://contabily-xcw1.onrender.com
+      - key: CONTABILY_EMAIL
+        sync: false
+      - key: CONTABILY_PASSWORD
+        sync: false
+      - key: RENDER_API_KEY
+        sync: false
+      - key: RENDER_SERVICE_ID
+        sync: false
